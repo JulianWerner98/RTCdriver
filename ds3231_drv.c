@@ -287,6 +287,6 @@ module_exit(ds3231_module_exit);
 
 
 /* Module-Informationen. */
-MODULE_AUTHOR("Klaus Musterman <musterr@uni-kassel.de>");
-MODULE_DESCRIPTION("Beschreibung");
+MODULE_AUTHOR("Alexander Golke & Julian Werner");
+MODULE_DESCRIPTION("Real Time Clock Driver - DS3231");
 MODULE_LICENSE("GPL");
