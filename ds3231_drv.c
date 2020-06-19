@@ -31,7 +31,35 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
  * i2c Kommunikation mit dem  Device (DS3231) benötigt.
  */
 static struct i2c_client *ds3231_client;
+static dev_t rtc_dev;
+static struct cdev rtc_cdev;
+static struct class *rtc_devclass;
 
+static struct file_operations fops = {
+
+	.owner 		= THIS_MODULE,
+	//.llseek		= no_llseek,
+	.read		= dev_read,
+	.write		= dev_write,
+	//.unlocked_ioctl	= dev_ioctl,
+	.open		= dev_open,
+	.release 	= dev_close,
+};
+static int dev_open(struct inode *inode, struct file *file){
+	return 0;
+	}
+
+static int dev_close(struct inode *inode, struct file *file){
+	return 0;
+	}
+
+static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
+	return 0;
+	}
+
+static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
+	return 0;
+	}
 
 /*
  * Initialisierung des Treibers und Devices.
@@ -138,93 +166,47 @@ static struct i2c_driver ds3231_driver = {
  * wird das neue Device (DS3231) registriert und der I2C Treiber
  * hinzugefügt.
  */
-
-	
-static dev_t rtc_dev;
-static struct cdev rtc_cdev;
-static struct class *rtc_devclass;
-
-static struct file_operations fops = {
-	
-	.owner 		= THIS_MODULE,
-	//.llseek		= no_llseek,
-	.read		= dev_read,
-	.write		= dev_write,
-	//.unlocked_ioctl	= dev_ioctl,
-	.open		= dev_open,
-	.release 	= dev_close,
-
-};
-
-static int dev_open(struct inode *inode, struct file *file){
-	return 0;
-	}
-
-static int dev_close(struct inode *inode, struct file *file){
-	return 0;
-	}
-
-static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
-	return 0;
-	}
-
-static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
-	return 0;
-	}
-
-
-
-static int __init ds3231_module_init(void)
-{
-	int ret;
+static int __init ds3231_init(void)
+{	
+	int ret;	
 	struct i2c_adapter *adapter;
-
-	/* Gerätenummer für 1 Gerät allozieren */
-	ret = alloc_chrdev_region(&rtc_dev, 0, 1, "ds3231_drv");
-	if(ret < 0){
-		printk(KERN_ALERT "Fehler bei alloc_chrdev_region()\n");
-		return ret;
-	}
-
-	/* cdev-Struct initialisieren und dem Kernel bekannt machen */
-
-	//cdev_init(%rtc_cdev, &fops);
-	ret = cdev_add(&rtc_cdev, rtc_dev, 1);
-	if(ret < 0){
-		printk(KERN_ALERT "Fehler bei regristierung von CDEV-struct");
-		goto unreg_chrdev;
-	}
-
-	/*
-	 Eintrag im sysfs regristieren. Dadurch wird die Device-Datei
-	 automatisch von udev Dienst erstellt.
-	*/
-	rtc_dev = class_create(THIS_MODULE, "chardev");
-	if(rtc_dev == NULL){
-		printk(KERN_ALERT "Class konte nicht erstellt werden.\n");
-		goto clean_cdev;
-	}	
-
-	if(device_create(rtc_dev,NULL,rtc_dev,NULL,"ds3231_drv") == NULL){
-		printk(KERN_ALERT "Device konnte nicht erstellt werden.\n");
-		goto cleanup_chrdev_class;
-	}
-
-	/* ds3231_drv wurde erfolgreich initialisiert! */
-	
-	/*
-	 * Normaleweise werden die Informationen bezüglich der verbauten
-	 * Geräten (Devices) während der Kernel-Initialisierung mittels
-	 * eines Device-Trees Eintrages definiert. Anhand dieser Informationen
-	 * sucht der Kernel einen passenden Treiber für das Gerät (i2c_device_id).
-	 * In unserem Fall müssen die Informationen nachträglich definiert
-	 * und hinzugefügt werden.
-	 */
 	const struct i2c_board_info info = {
 		I2C_BOARD_INFO("ds3231_drv", 0x68)
 	};
-
 	printk("DS3231_drv: ds3231_module_init aufgerufen\n");
+	
+	/*
+	* Gerätenummer für 1 Gerät allozieren
+	*/
+	ret = alloc_chrdev_region(&rtc_dev, 0, 1, "ds3231_drv");
+	if(ret < 0) {
+		printk(KERN_ALERT " Fehler bei alloc_chrdev_region()\n");
+	return ret;
+	}
+	/*
+	* cdev-Struktur initialiesieren und dem Kernel bekannt machen.
+	*/
+	cdev_init(&rtc_cdev, &fops);
+	ret = cdev_add(&rtc_cdev, rtc_dev, 1);
+	if(ret < 0) {
+		printk(KERN_ALERT "Fehler bei registrierung von CDEV-Struktur");
+		goto unreg_chrdev;
+	}
+	/*
+	* Eintrag im sysfs registrieren. Dadurch wird die Device-Datei
+	* automatisch von udev Dienst erstellt.
+	*/
+	rtc_devclass = class_create(THIS_MODULE, "chardev");
+	if(rtc_devclass == NULL) {
+		printk(KERN_ALERT "Class konnte nicht erstellt werden.\n" );
+		goto clenup_cdev;
+	}
+	if(device_create(rtc_devclass,NULL,rtc_dev,NULL,"ds3231_drv") == NULL) {
+		printk(KERN_ALERT "Device konnte nicht erstellt werden.\n");
+		goto cleanup_chrdev_class;
+	}
+	/* Mein_treiber wurde erfolgreich initialisiert */
+	/*I2C Init*/	
 
 	ds3231_client = NULL;
 	adapter = i2c_get_adapter(1);
@@ -239,7 +221,6 @@ static int __init ds3231_module_init(void)
 		printk("DS3231_drv: I2C Client: Registrierung fehlgeschlagen\n");
 		return -ENODEV;
 	}
-
 	/* Treiber registrieren */
 	ret = i2c_add_driver(&ds3231_driver);
 	if(ret < 0) {
@@ -247,20 +228,20 @@ static int __init ds3231_module_init(void)
 		i2c_unregister_device(ds3231_client);
 		ds3231_client = NULL;
 	}
-	printk("Alles hat funktioniert Bruder, das wird returned: %d\n", ret);
-	return ret;
-
+	return ret; // Alles geklappt
+	
 	/* Resourcen freigeben und Fehler melden. */
 	cleanup_chrdev_class:
-		class_destroy(rtc_dev);
-	clean_cdev:
+		class_destroy(rtc_devclass);
+	clenup_cdev:
 		cdev_del(&rtc_cdev);
 	unreg_chrdev:
 		unregister_chrdev_region(rtc_dev, 1);
 	return -EIO;
-	//cool!
+	
+	
 }
-module_init(ds3231_module_init);
+module_init(ds3231_init);
 
 
 /*
@@ -269,24 +250,23 @@ module_init(ds3231_module_init);
  * Wird beim Enladen des Moduls aufgerufen. Innerhalb der Funktion
  * werden alle Resourcen wieder freigegeben.
  */
-static void __exit ds3231_module_exit(void)
+static void __exit ds3231_exit(void)
 {
-	printk("DS3231_drv: ds3231_module_exit aufgerufen\n");
-
+	printk("DS3231_drv: ds3231_module_exit aufgerufen\n");	
 	device_destroy(rtc_devclass, rtc_dev);
-	class_destroy(rtc_devclass);	
+	class_destroy(rtc_devclass);
 	cdev_del(&rtc_cdev);
 	unregister_chrdev_region(rtc_dev, 1);
-
+	printk("Treiber entladen\n");
 	if(ds3231_client != NULL) {
 		i2c_del_driver(&ds3231_driver);
 		i2c_unregister_device(ds3231_client);
 	}
 }
-module_exit(ds3231_module_exit);
+module_exit(ds3231_exit);
 
 
 /* Module-Informationen. */
 MODULE_AUTHOR("Alexander Golke & Julian Werner");
-MODULE_DESCRIPTION("Real Time Clock Driver - DS3231");
+MODULE_DESCRIPTION("RTC driver for DS3231");
 MODULE_LICENSE("GPL");
