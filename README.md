@@ -1,3 +1,2 @@
 # RTCdriver
-Heute geändert 
-Und ganz toll
+ReadMe vom RTC Driver für RA im Module C
