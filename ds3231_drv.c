@@ -53,9 +53,15 @@ static int dev_close(struct inode *inode, struct file *file){
 	}
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
-	char data[]  = {"Hallo Bruder!\n"};
-	int count = copy_to_user(puffer,data,15);
-	return 15;
+	if(puffer[0] == '\0'){
+		char data[]  = {"Hallo Bruder!\n"};
+		int size = sizeof(data);
+		int count = copy_to_user(puffer,data,size);
+		
+		return size;
+	}
+	return 0;
+	
 	}
 
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
