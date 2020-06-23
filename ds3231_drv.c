@@ -1,4 +1,3 @@
-
 #include <linux/slab.h>
 #include <linux/bcd.h>
 #include <linux/kernel.h>
@@ -39,10 +38,9 @@ static struct class *rtc_devclass;
 static struct file_operations fops = {
 
 	.owner 		= THIS_MODULE,
-	//.llseek		= no_llseek,
+//	.llseek		= no_llseek,
 	.read		= dev_read,
 	.write		= dev_write,
-	//.unlocked_ioctl	= dev_ioctl,
 	.open		= dev_open,
 	.release 	= dev_close,
 };
@@ -55,16 +53,14 @@ static int dev_close(struct inode *inode, struct file *file){
 	}
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
-//	int count = copy_to_user(puffer,"Hallo Bruder!", 13);		//N war hier, schon komisch
-//	return 13 - count;
-	return 0;
+	char data[]  = {"Hallo Bruder!\n"};
+	int count = copy_to_user(puffer,data,15);
+	return 15;
 	}
 
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
 	return 0;
 	}
-
-
 
 /*
  * Initialisierung des Treibers und Devices.
