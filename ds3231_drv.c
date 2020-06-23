@@ -55,12 +55,16 @@ static int dev_close(struct inode *inode, struct file *file){
 	}
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
+//	int count = copy_to_user(puffer,"Hallo Bruder!", 13);		//N war hier, schon komisch
+//	return 13 - count;
 	return 0;
 	}
 
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
 	return 0;
 	}
+
+
 
 /*
  * Initialisierung des Treibers und Devices.
