@@ -18,8 +18,9 @@
 # define DS3231_BIT_INTCN	0x04
 # define DS3231_BIT_A2IE	0x02
 # define DS3231_BIT_A1IE	0x01
-#define DS3231_REG_STATUS	0x0f
+# define DS3231_REG_STATUS	0x0f
 # define DS3231_BIT_OSF		0x80
+char date[21] = {"2020-06-24 17:19:23\n"};
 
 static int dev_open(struct inode *inode, struct file *file);
 static int dev_close(struct inode *inode, struct file *file);
@@ -46,27 +47,27 @@ static struct file_operations fops = {
 };
 static int dev_open(struct inode *inode, struct file *file){
 	return 0;
-	}
+}
 
 static int dev_close(struct inode *inode, struct file *file){
 	return 0;
-	}
+}
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
-	if(puffer[0] == '\0'){
-		char data[]  = {"Hallo Bruder!\n"};
-		int size = sizeof(data);
-		int count = copy_to_user(puffer,data,size);
-		
-		return size;
+	int count = 0;
+	while(puffer[count++] != '\0');
+	if(count < 21){
+		count = copy_to_user(puffer,date,21);
+		return 21 - count;
 	}
 	return 0;
-	
-	}
+}
 
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
-	return 0;
-	}
+	copy_from_user(date,puffer,bytes);
+	printk("dev_write called yeah\n"); 
+	return bytes;
+}
 
 /*
  * Initialisierung des Treibers und Devices.
