@@ -26,7 +26,7 @@ static int dev_open(struct inode *inode, struct file *file);
 static int dev_close(struct inode *inode, struct file *file);
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset);
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset);
-
+static bool itoa(int n,char *string);
 /*
  * Der Zeiger wird bei Initialisierung gesetzt und wird für die
  * i2c Kommunikation mit dem  Device (DS3231) benötigt.
@@ -45,6 +45,9 @@ static struct file_operations fops = {
 	.open		= dev_open,
 	.release 	= dev_close,
 };
+
+
+
 static int dev_open(struct inode *inode, struct file *file){
 	return 0;
 }
@@ -55,17 +58,36 @@ static int dev_close(struct inode *inode, struct file *file){
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
 	int count = 0;
-	char cool[50] = {"cool"};
-	char cool2[] = {" es geht\n"};
-	printk(cool);
-	strcat(cool, cool2);
-	printk(cool);
+	int test = 23;
+	int testklein = 5;
+	char teststring[3];
+	itoa(test,teststring);
+	printk(teststring);
+	itoa(testklein,teststring);
+	printk(teststring);
+	printk("\n");
+
 	while(puffer[count++] != '\0');
 	if(count < 21){
 		count = copy_to_user(puffer,date,21);
 		return 21 - count;
 	}
 	return 0;
+}
+
+static bool itoa(int n, char *string){
+	if(n > 99 || n < 0){
+		return false;
+	}
+	string[2] = '\0';
+	if(n < 10){
+		string[0] = '0';
+	}
+	else{
+		string[0] = (n/10)+'0';
+	}
+	string[1] = (n % 10)+'0';
+	return true; 
 }
 
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
