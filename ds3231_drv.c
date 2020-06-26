@@ -10,7 +10,7 @@
 #include <linux/uaccess.h>
 #include <asm/errno.h>
 #include <asm/delay.h>
-
+#include <uapi/linux/string.h>
 
 /* Register Definitionen */
 #define DS3231_REG_CONTROL	0x0e
@@ -55,6 +55,11 @@ static int dev_close(struct inode *inode, struct file *file){
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
 	int count = 0;
+	char cool[50] = {"cool"};
+	char cool2[] = {" es geht\n"};
+	printk(cool);
+	strcat(cool, cool2);
+	printk(cool);
 	while(puffer[count++] != '\0');
 	if(count < 21){
 		count = copy_to_user(puffer,date,21);
