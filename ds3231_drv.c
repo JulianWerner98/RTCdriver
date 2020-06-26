@@ -20,6 +20,9 @@
 # define DS3231_BIT_A1IE	0x01
 # define DS3231_REG_STATUS	0x0f
 # define DS3231_BIT_OSF		0x80
+# define DS3231_YEAR		0x06
+
+
 char date[21] = {"2020-06-24 17:19:23\n"};
 
 static int dev_open(struct inode *inode, struct file *file);
@@ -58,15 +61,8 @@ static int dev_close(struct inode *inode, struct file *file){
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
 	int count = 0;
-	int test = 23;
-	int testklein = 5;
-	char teststring[3];
-	itoa(test,teststring);
-	printk(teststring);
-	itoa(testklein,teststring);
-	printk(teststring);
-	printk("\n");
-
+	s32 year = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
+	printk("Jahr: %d\n",year);
 	while(puffer[count++] != '\0');
 	if(count < 21){
 		count = copy_to_user(puffer,date,21);
