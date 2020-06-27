@@ -21,6 +21,12 @@
 # define DS3231_REG_STATUS	0x0f
 # define DS3231_BIT_OSF		0x80
 # define DS3231_YEAR		0x06
+# define DS3231_MONTH		0x05
+# define DS3231_DAY			0x04
+# define DS3231_HOUR		0x02
+# define DS3231_MINUTE		0x01
+# define DS3231_SECOND		0x00
+
 
 
 char date[21] = {"2020-06-24 17:19:23\n"};
