@@ -67,10 +67,15 @@ static int dev_close(struct inode *inode, struct file *file){
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
 	int count = 0;
+	char string[3];
 	s32 year = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
-	printk("Jahr: %d\n",year);
+	
 	while(puffer[count++] != '\0');
 	if(count < 21){
+		printk("Jahr: %d\n",year);
+		itoa(((year>>4)*10) + (year & 0xF),string);
+		printk("Jahr korrigiert: %s\n",string);		
+		
 		count = copy_to_user(puffer,date,21);
 		return 21 - count;
 	}
