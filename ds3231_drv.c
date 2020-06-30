@@ -84,7 +84,7 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 		}
 		if(month >>7) { // Centurybit -> 2000-2099 -> false, 2100-2199 -> true
 			century = true;
-			month &= 0x7F;
+			month &= 0x7F; //Bit löschen
 		}
 		if(hour >> 6) {//12(true) or 24(false) Format
 			format = true;
@@ -103,7 +103,7 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 			}
 		}
 		else { // 24 Stunden Format
-			hour = (hour & 0xF) + (((hour & 0x10)>>4)*10) + (((hour & 0x20)>>4)*20);
+			hour = (hour & 0xF) + (((hour & 0x10)>>4)*10) + (((hour & 0x20)>>5)*20);
 		}
 		//Ab hier haben die s32 die korrekten Werte!	
 		translateMonth(month,monthWord);
