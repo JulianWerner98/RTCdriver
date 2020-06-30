@@ -22,20 +22,18 @@
 # define DS3231_BIT_OSF		0x80
 # define DS3231_YEAR		0x06
 # define DS3231_MONTH		0x05
-# define DS3231_DAY			0x04
+# define DS3231_DAY		0x04
 # define DS3231_HOUR		0x02
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
 
-
-
-char date[21] = {"2020-06-24 17:19:23\n"};
 
 static int dev_open(struct inode *inode, struct file *file);
 static int dev_close(struct inode *inode, struct file *file);
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset);
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset);
 static bool itoa(int n,char *string);
+void translateMonth(int,char*);
 /*
  * Der Zeiger wird bei Initialisierung gesetzt und wird für die
  * i2c Kommunikation mit dem  Device (DS3231) benötigt.
@@ -68,20 +66,119 @@ static int dev_close(struct inode *inode, struct file *file){
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
 	int count = 0;
 	char string[3];
-	s32 year = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
+	bool century = false, format = false;	
+	s32 year,month,day,hour,minute,second;
+	char date[29] = {""}, monthWord[10]={""};
 	
 	while(puffer[count++] != '\0');
 	if(count < 21){
-		printk("Jahr: %d\n",year);
-		itoa(((year>>4)*10) + (year & 0xF),string);
-		printk("Jahr korrigiert: %s\n",string);		
+		year = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
+		month = i2c_smbus_read_byte_data(ds3231_client,DS3231_MONTH);
+		day = i2c_smbus_read_byte_data(ds3231_client,DS3231_DAY);
+		hour = i2c_smbus_read_byte_data(ds3231_client,DS3231_HOUR);
+		minute = i2c_smbus_read_byte_data(ds3231_client,DS3231_MINUTE);
+		second = i2c_smbus_read_byte_data(ds3231_client,DS3231_SECOND);
 		
-		count = copy_to_user(puffer,date,21);
-		return 21 - count;
+		if(year < 0 || month < 0 || day < 0 || hour < 0 || minute < 0 || second < 0) {
+			return 0;
+		}
+		if(month >>7) { // Centurybit -> 2000-2099 -> false, 2100-2199 -> true
+			century = true;
+			month &= 0x7F;
+		}
+		if(hour >> 6) {//12(true) or 24(false) Format
+			format = true;
+		}
+		year = ((year>>4)*10) + (year & 0xF);
+		month = ((month>>4)*10) + (month & 0xF);
+		day = ((day>>4)*10) + (day & 0xF);
+		minute = ((minute>>4)*10) + (minute & 0xF);
+		second = ((second>>4)*10) + (second & 0xF);
+		if(format) { // 12 Stunden Format
+			if(hour & 0x20) {
+				hour = 12 + (hour & 0xF) + (((hour & 0x10)>>4)*10); 
+			} 
+			else {
+				hour = (hour & 0xF) + (((hour & 0x10)>>4)*10);
+			}
+		}
+		else { // 24 Stunden Format
+			hour = (hour & 0xF) + (((hour & 0x10)>>4)*10) + (((hour & 0x20)>>4)*20);
+		}
+		//Ab hier haben die s32 die korrekten Werte!	
+		translateMonth(month,monthWord);
+		if(itoa(day,string)) {
+			strcat(date,string);
+			strcat(date,". ");
+		}
+		strcat(date,monthWord);
+		strcat(date," ");
+		if(itoa(hour,string)) {
+                        strcat(date,string);
+                        strcat(date,":");
+                }
+		if(itoa(minute,string)) {
+                        strcat(date,string);
+                        strcat(date,":");
+                }
+		if(itoa(second,string)) {
+                        strcat(date,string);
+                        strcat(date," ");
+                }
+		if(century){
+			strcat(date,"21");
+		}
+		else {
+			strcat(date,"20");
+		}
+		if(itoa(year,string)) {
+                        strcat(date,string);
+                        strcat(date,"\n");
+                }		
+		count = copy_to_user(puffer,date,sizeof(date));
+		return sizeof(date) - count;
 	}
 	return 0;
 }
-
+void translateMonth(int month,char *string) {
+	switch(month) {
+		case 1:
+			strcpy(string,"Januar");
+			break;
+		case 2:
+                        strcpy(string,"Februar");
+                        break;
+		case 3:
+                        strcpy(string,"Maerz");
+                        break;
+		case 4:
+                        strcpy(string,"April");
+                        break;
+		case 5:
+                        strcpy(string,"Mai");
+                        break;
+		case 6:
+                        strcpy(string,"Juni");
+                        break;
+		case 7:
+                        strcpy(string,"Juli");
+                        break;
+		case 8:
+                        strcpy(string,"August");
+                        break;
+		case 9:
+                        strcpy(string,"September");
+                        break;
+		case 10:
+                        strcpy(string,"Oktober");
+                        break;
+		case 11:
+                        strcpy(string,"November");
+                        break;
+		case 12:
+                        strcpy(string,"Dezember");
+	}
+} 
 static bool itoa(int n, char *string){
 	if(n > 99 || n < 0){
 		return false;
@@ -98,9 +195,10 @@ static bool itoa(int n, char *string){
 }
 
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
-	copy_from_user(date,puffer,bytes);
+	//int count = copy_from_user(date,puffer,bytes);
 	printk("dev_write called yeah\n"); 
-	return bytes;
+	//return bytes-count;
+	return 0;
 }
 
 /*
