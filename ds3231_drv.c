@@ -219,8 +219,12 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	if(year < 0 || month < 0 || day < 0 || hour < 0 || minutes < 0 || seconds < 0) return -1;
 	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':') return -1;
 	
-	printk("Century: %d, Year: %d, Month: %d, Day: %d, Hours: %d, Minutes: %d, Seconds %d \n",century,year,month,day,hour,minutes,seconds);
+	//printk("Century: %d, Year: %d, Month: %d, Day: %d, Hours: %d, Minutes: %d, Seconds %d \n",century,year,month,day,hour,minutes,seconds);
  
+	//TO-DO: Werner's coole funktion mit ganz viel mathe 
+
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes/10) << 4) | (minutes%10))); 
+
 	return bytes-count;
 }
 
