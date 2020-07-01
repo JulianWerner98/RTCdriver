@@ -33,6 +33,7 @@ static int dev_close(struct inode *inode, struct file *file);
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset);
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset);
 static bool itoa(int n,char *string);
+static int atoi(int n,char *string);
 void translateMonth(int,char*);
 /*
  * Der Zeiger wird bei Initialisierung gesetzt und wird für die
@@ -178,7 +179,8 @@ void translateMonth(int month,char *string) {
 		case 12:
                         strcpy(string,"Dezember");
 	}
-} 
+}
+ 
 static bool itoa(int n, char *string){
 	if(n > 99 || n < 0){
 		return false;
@@ -194,12 +196,35 @@ static bool itoa(int n, char *string){
 	return true; 
 }
 
-static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
-	//int count = copy_from_user(date,puffer,bytes);
-	printk("dev_write called yeah\n"); 
-	//return bytes-count;
-	return 0;
+static int atoi(int n, char *string){
+	int temp;
+	if((string[n] < '0' || string[n] > '9') || (string[n+1] < '0' || string[n+1] > '9')) return -1;
+	temp = (string[n]-'0')*10+(string[n+1]-'0');
+	return temp;
 }
+
+static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
+	char date[20] = "";
+	int count = copy_from_user(date,puffer,bytes);
+	int year,month,day,hour,minutes,seconds,century;
+	
+	century = atoi(0, date);
+	year = atoi(2, date);
+	month = atoi(5, date);
+	day = atoi(8,date);
+	hour = atoi(11,date);
+	minutes = atoi(14,date);
+	seconds = atoi(17,date);
+
+	if(year < 0 || month < 0 || day < 0 || hour < 0 || minutes < 0 || seconds < 0) return -1;
+	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':') return -1;
+	
+	printk("Century: %d, Year: %d, Month: %d, Day: %d, Hours: %d, Minutes: %d, Seconds %d \n",century,year,month,day,hour,minutes,seconds);
+ 
+	return bytes-count;
+}
+
+
 
 /*
  * Initialisierung des Treibers und Devices.
