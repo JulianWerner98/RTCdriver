@@ -243,8 +243,12 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	minutes = atoi(14,date);
 	seconds = atoi(17,date);
 
-	if(year < 0 || month < 0 || day < 0 || hour < 0 || minutes < 0 || seconds < 0) return -EINVAL;
-	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':') return -EINVAL;
+	//if(year < 0 || month < 0 || day < 0 || hour < 0 || minutes < 0 || seconds < 0) return -EINVAL;
+	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':'){
+		printk("DS3231: Format falsch! >:( \n");
+		return -EINVAL;
+
+	}
  
 	if(!checkDate(day,month,century,year,hour,minutes,seconds)){
 		if(century < 20 || century > 21){
