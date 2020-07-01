@@ -35,6 +35,7 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 static bool itoa(int n,char *string);
 static int atoi(int n,char *string);
 void translateMonth(int,char*);
+static bool checkDate(int, int, int, int, int, int, int);
 /*
  * Der Zeiger wird bei Initialisierung gesetzt und wird für die
  * i2c Kommunikation mit dem  Device (DS3231) benötigt.
@@ -203,6 +204,31 @@ static int atoi(int n, char *string){
 	return temp;
 }
 
+static bool checkDate(int day, int month, int century, int year, int hour, int minute, int second) {
+    int jahr = 0;
+    if(day < 1 || day > 31) return false;
+    if(month < 1 || month > 12) return false;
+    if(year < 0) return false;
+    if(century != 20 && century != 21) return false;
+    if(hour < 0 || hour > 24) return false;
+    if(minute < 0 || minute > 59) return false;
+    if(second < 0 || second > 59) return false;
+    if(day < 29) return true;
+    if(month != 2) {
+        if(day < 31) return true;
+        if(month == 1 || month == 3 ||month == 5 ||month == 7 ||month == 8 ||month == 10 ||month == 12) return true;
+        return false;
+    }
+    else {
+        if(day > 29) return false;
+        jahr = (1000 * century) + year;
+        if( (!(jahr %4)) && jahr%100) return true;
+        if( (!(jahr %100)) && jahr%400) return false;
+        if((!(jahr %400))) return true;
+        return false;
+    }
+}
+
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
 	char date[20] = "";
 	int count = copy_from_user(date,puffer,bytes);
@@ -217,10 +243,17 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	minutes = atoi(14,date);
 	seconds = atoi(17,date);
 
-	if(year < 0 || month < 0 || day < 0 || hour < 0 || minutes < 0 || seconds < 0) return -1;
-	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':') return -1;
+	if(year < 0 || month < 0 || day < 0 || hour < 0 || minutes < 0 || seconds < 0) return -EINVAL;
+	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':') return -EINVAL;
  
-	//TO-DO: Werner's coole funktion mit ganz viel mathe 
+	if(!checkDate(day,month,century,year,hour,minutes,seconds)){
+		if(century < 20 || century > 21){
+		 printk("DS3231: Werte ausserhalb des Wertebereichs!\n");
+		 return -EOVERFLOW;
+		}
+		printk("DS3231: Datum kann nicht existieren!\n");
+		return -EINVAL;
+	} 
 	
 	 if(century == 21){
                 century_check = true;
