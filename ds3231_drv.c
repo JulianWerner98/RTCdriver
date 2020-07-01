@@ -207,6 +207,7 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	char date[20] = "";
 	int count = copy_from_user(date,puffer,bytes);
 	int year,month,day,hour,minutes,seconds,century;
+	bool century_check;
 	
 	century = atoi(0, date);
 	year = atoi(2, date);
@@ -218,12 +219,22 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 
 	if(year < 0 || month < 0 || day < 0 || hour < 0 || minutes < 0 || seconds < 0) return -1;
 	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':') return -1;
-	
-	//printk("Century: %d, Year: %d, Month: %d, Day: %d, Hours: %d, Minutes: %d, Seconds %d \n",century,year,month,day,hour,minutes,seconds);
  
 	//TO-DO: Werner's coole funktion mit ganz viel mathe 
+	
+	 if(century == 21){
+                century_check = true;
+        } else{
+                century_check = false;
+        }
 
 	i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes/10) << 4) | (minutes%10))); 
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds/10) << 4) | (seconds%10)));
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year/10) << 4) | (year%10)));
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day/10) << 4) | (day%10)));
+
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour/10) << 4) | (hour%10)));
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month/10) << 4) | (month%10) | (century_check << 7)));	
 
 	return bytes-count;
 }
