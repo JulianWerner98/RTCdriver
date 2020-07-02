@@ -243,16 +243,16 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	seconds = atoi(17,date);
 
 	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':'){
-		printk("DS3231: Format falsch! >:( \n");
+		printk("DS3231_drv: Format falsch! >:( \n");
 		return -EINVAL;
 	}
  
 	if(!checkDate(day,month,century,year,hour,minutes,seconds)){
 		if(century < 20 || century > 21){
-		 printk("DS3231: Werte ausserhalb des Wertebereichs!\n");
+		 printk("DS3231_drv: Werte ausserhalb des Wertebereichs!\n");
 		 return -EOVERFLOW;
 		}
-		printk("DS3231: Datum kann nicht existieren!\n");
+		printk("DS3231_drv: Datum existiert nicht!\n");
 		return -EINVAL;
 	} 
 	
