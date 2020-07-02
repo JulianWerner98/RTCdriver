@@ -22,7 +22,7 @@
 # define DS3231_BIT_OSF		0x80
 # define DS3231_YEAR		0x06
 # define DS3231_MONTH		0x05
-# define DS3231_DAY		0x04
+# define DS3231_DAY			0x04
 # define DS3231_HOUR		0x02
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
@@ -48,7 +48,6 @@ static struct class *rtc_devclass;
 static struct file_operations fops = {
 
 	.owner 		= THIS_MODULE,
-//	.llseek		= no_llseek,
 	.read		= dev_read,
 	.write		= dev_write,
 	.open		= dev_open,
@@ -84,11 +83,11 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 		if(year < 0 || month < 0 || day < 0 || hour < 0 || minute < 0 || second < 0) {
 			return 0;
 		}
-		if(month >>7) { // Centurybit -> 2000-2099 -> false, 2100-2199 -> true
+		if(month >>7) { /* Centurybit -> 2000-2099 -> false, 2100-2199 -> true */
 			century = true;
-			month &= 0x7F; //Bit löschen
+			month &= 0x7F; /*Bit löschen*/
 		}
-		if(hour >> 6) {//12(true) or 24(false) Format
+		if(hour >> 6) {/*12(true) or 24(false) Format*/
 			format = true;
 		}
 		year = ((year>>4)*10) + (year & 0xF);
@@ -96,7 +95,7 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 		day = ((day>>4)*10) + (day & 0xF);
 		minute = ((minute>>4)*10) + (minute & 0xF);
 		second = ((second>>4)*10) + (second & 0xF);
-		if(format) { // 12 Stunden Format
+		if(format) { /*12 Stunden Format*/
 			if(hour & 0x20) {
 				hour = 12 + (hour & 0xF) + (((hour & 0x10)>>4)*10); 
 			} 
@@ -104,10 +103,10 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 				hour = (hour & 0xF) + (((hour & 0x10)>>4)*10);
 			}
 		}
-		else { // 24 Stunden Format
+		else { /*24 Stunden Format*/
 			hour = (hour & 0xF) + (((hour & 0x10)>>4)*10) + (((hour & 0x20)>>5)*20);
 		}
-		//Ab hier haben die s32 die korrekten Werte!	
+		/*Ab hier haben die s32 die korrekten Werte!*/	
 		translateMonth(month,monthWord);
 		if(itoa(day,string)) {
 			strcat(date,string);
@@ -243,11 +242,9 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	minutes = atoi(14,date);
 	seconds = atoi(17,date);
 
-	//if(year < 0 || month < 0 || day < 0 || hour < 0 || minutes < 0 || seconds < 0) return -EINVAL;
 	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':'){
 		printk("DS3231: Format falsch! >:( \n");
 		return -EINVAL;
-
 	}
  
 	if(!checkDate(day,month,century,year,hour,minutes,seconds)){
@@ -259,19 +256,18 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 		return -EINVAL;
 	} 
 	
-	 if(century == 21){
-                century_check = true;
-        } else{
-                century_check = false;
-        }
-
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes/10) << 4) | (minutes%10))); 
+	if(century == 21){
+		century_check = true;
+	} 
+	else{
+		century_check = false;
+	}
 	i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds/10) << 4) | (seconds%10)));
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year/10) << 4) | (year%10)));
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day/10) << 4) | (day%10)));
-
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour/10) << 4) | (hour%10)));
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes/10) << 4) | (minutes%10))); 
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour/10) << 4) | (hour%10)));	
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day/10) << 4) | (day%10)));	
 	i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month/10) << 4) | (month%10) | (century_check << 7)));	
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year/10) << 4) | (year%10)));
 
 	return bytes-count;
 }
@@ -445,7 +441,7 @@ static int __init ds3231_init(void)
 		i2c_unregister_device(ds3231_client);
 		ds3231_client = NULL;
 	}
-	return ret; // Alles geklappt
+	return ret; /*Alles geklappt*/
 	
 	/* Resourcen freigeben und Fehler melden. */
 	cleanup_chrdev_class:
