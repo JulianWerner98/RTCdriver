@@ -27,7 +27,6 @@
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
 # define DS3231_TEMP_MSB	0x11
-# define DS3231_TEMP_LSB	0x12
 
 
 static int dev_open(struct inode *inode, struct file *file);
@@ -51,7 +50,7 @@ static bool busy = false;
 static struct statusInfo {
 		bool osf;
 		bool bsy;
-		float temperature;
+		int temperature;
 }state;
 
 static struct file_operations fops = {
@@ -64,18 +63,15 @@ static struct file_operations fops = {
 };
 
 static bool check_state(void){
-	s32 tempMSB,tempLSB,status;
-	float tmp = 0;	//signed war hier bruder
+	s32 tempMSB,status;
+	int zwischenspeicher = 0;	//signed war hier bruder
 	status = i2c_smbus_read_byte_data(ds3231_client,DS3231_REG_STATUS);
 	tempMSB = i2c_smbus_read_byte_data(ds3231_client,DS3231_TEMP_MSB);
-	tempLSB = i2c_smbus_read_byte_data(ds3231_client,DS3231_TEMP_LSB);
 	state.osf = status & 0x80;
 	state.bsy = status & 0x04;
-	tmp = tempMSB & 0x7F; 
-	if(tempLSB & 0x80) tmp += 0.5f;
-	if(tempLSB & 0x40) tmp += 0.25f;
-	if(tempMSB & 0x80) tmp *= -1;
-	state.temperature = tmp;
+	zwischenspeicher = tempMSB & 0x7F; 
+	if(tempMSB & 0x80) zwischenspeicher *= -1;
+	state.temperature = zwischenspeicher;
 	if(!state.osf) return false;
 	i2c_smbus_write_byte_data(ds3231_client,DS3231_REG_STATUS,status & 0x7F);
 	return true;	
@@ -102,8 +98,12 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 		return -EBUSY;
 		}
         busy = true;
-
 	
+	
+	check_state();
+	
+	//printk("Temperatur: %f\n", state.temperature);
+
 	while(puffer[count++] != '\0');
 	if(count < 21){
 		year = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
