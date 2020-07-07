@@ -26,6 +26,8 @@
 # define DS3231_HOUR		0x02
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
+# define DS3231_TEMP_MSB	0x11
+# define DS3231_TEMP_LSB	0x12
 
 
 static int dev_open(struct inode *inode, struct file *file);
@@ -34,8 +36,9 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset);
 static bool itoa(int n,char *string);
 static int atoi(int n,char *string);
-void translateMonth(int,char*);
+void translateMonth(int,char*);		//TO-DO: Konsistente Funktionennamen!
 static bool checkDate(int, int, int, int, int, int, int);
+static bool check_state(void);
 /*
  * Der Zeiger wird bei Initialisierung gesetzt und wird für die
  * i2c Kommunikation mit dem  Device (DS3231) benötigt.
@@ -44,6 +47,12 @@ static struct i2c_client *ds3231_client;
 static dev_t rtc_dev;
 static struct cdev rtc_cdev;
 static struct class *rtc_devclass;
+static bool busy = false;
+static struct statusInfo {
+		bool osf;
+		bool bsy;
+		float temperature;
+}state;
 
 static struct file_operations fops = {
 
@@ -54,7 +63,23 @@ static struct file_operations fops = {
 	.release 	= dev_close,
 };
 
-
+static bool check_state(void){
+	s32 tempMSB,tempLSB,status;
+	float tmp = 0;	//signed war hier bruder
+	status = i2c_smbus_read_byte_data(ds3231_client,DS3231_REG_STATUS);
+	tempMSB = i2c_smbus_read_byte_data(ds3231_client,DS3231_TEMP_MSB);
+	tempLSB = i2c_smbus_read_byte_data(ds3231_client,DS3231_TEMP_LSB);
+	state.osf = status & 0x80;
+	state.bsy = status & 0x04;
+	tmp = tempMSB & 0x7F; 
+	if(tempLSB & 0x80) tmp += 0.5f;
+	if(tempLSB & 0x40) tmp += 0.25f;
+	if(tempMSB & 0x80) tmp *= -1;
+	state.temperature = tmp;
+	if(!state.osf) return false;
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_REG_STATUS,status & 0x7F);
+	return true;	
+}
 
 static int dev_open(struct inode *inode, struct file *file){
 	return 0;
@@ -65,11 +90,19 @@ static int dev_close(struct inode *inode, struct file *file){
 }
 
 static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
+
 	int count = 0;
 	char string[3];
 	bool century = false, format = false;	
 	s32 year,month,day,hour,minute,second;
 	char date[29] = {""}, monthWord[10]={""};
+
+	if(busy){
+		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+		return -EBUSY;
+		}
+        busy = true;
+
 	
 	while(puffer[count++] != '\0');
 	if(count < 21){
@@ -81,6 +114,7 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 		second = i2c_smbus_read_byte_data(ds3231_client,DS3231_SECOND);
 		
 		if(year < 0 || month < 0 || day < 0 || hour < 0 || minute < 0 || second < 0) {
+			busy = false;
 			return 0;
 		}
 		if(month >>7) { /* Centurybit -> 2000-2099 -> false, 2100-2199 -> true */
@@ -137,8 +171,10 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
                         strcat(date,"\n");
                 }		
 		count = copy_to_user(puffer,date,sizeof(date));
+		busy = false;
 		return sizeof(date) - count;
 	}
+	busy = false;
 	return 0;
 }
 void translateMonth(int month,char *string) {
@@ -235,6 +271,14 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	int count = copy_from_user(date,puffer,bytes);
 	int year,month,day,hour,minutes,seconds,century;
 	bool century_check;
+
+	if(busy){
+                printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+                return -EBUSY;
+                }
+        busy = true;
+
+
 	
 	century = atoi(0, date);
 	year = atoi(2, date);
@@ -246,15 +290,18 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 
 	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':'){
 		printk("DS3231_drv: Format falsch! >:( \n");
+		busy = false;
 		return -EINVAL;
 	}
  
 	if(!checkDate(day,month,century,year,hour,minutes,seconds)){
 		if(century < 20 || century > 21){
 		 printk("DS3231_drv: Werte ausserhalb des Wertebereichs!\n");
+		 busy = false;
 		 return -EOVERFLOW;
 		}
 		printk("DS3231_drv: Datum existiert nicht!\n");
+		busy = false;
 		return -EINVAL;
 	} 
 	
@@ -270,7 +317,8 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day/10) << 4) | (day%10)));	
 	i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month/10) << 4) | (month%10) | (century_check << 7)));	
 	i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year/10) << 4) | (year%10)));
-
+	
+	busy = false;
 	return bytes-count;
 }
 
