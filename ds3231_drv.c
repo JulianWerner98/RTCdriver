@@ -22,7 +22,7 @@
 # define DS3231_BIT_OSF		0x80
 # define DS3231_YEAR		0x06
 # define DS3231_MONTH		0x05
-# define DS3231_DAY			0x04
+# define DS3231_DAY		0x04
 # define DS3231_HOUR		0x02
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
@@ -96,13 +96,16 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 	if(busy){
 		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
 		return -EBUSY;
-		}
+	}
         busy = true;
 	
 	
-	check_state();
+	if(check_state()){
+		printk("DS3231_drv: OSF nicht aktiv!\n");
+		return -EAGAIN;
+	}
 	
-	//printk("Temperatur: %f\n", state.temperature);
+	printk("Temperatur: %d\n", state.temperature);
 
 	while(puffer[count++] != '\0');
 	if(count < 21){
