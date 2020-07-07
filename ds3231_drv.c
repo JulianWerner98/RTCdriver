@@ -198,7 +198,9 @@ static bool itoa(int n, char *string){
 
 static int atoi(int n, char *string){
 	int temp;
-	if((string[n] < '0' || string[n] > '9') || (string[n+1] < '0' || string[n+1] > '9')) return -1;
+	int convert = string[n];
+	int convert2 = string[n+1];	
+	if((convert < '0' || convert > '9') || (convert2 < '0' || convert2 > '9')) return -1;
 	temp = (string[n]-'0')*10+(string[n+1]-'0');
 	return temp;
 }
