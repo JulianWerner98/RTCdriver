@@ -22,7 +22,7 @@
 # define DS3231_BIT_OSF		0x80
 # define DS3231_YEAR		0x06
 # define DS3231_MONTH		0x05
-# define DS3231_DAY		0x04
+# define DS3231_DAY			0x04
 # define DS3231_HOUR		0x02
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
@@ -51,6 +51,7 @@ static struct statusInfo {
 		bool osf;
 		bool bsy;
 		int temperature;
+		bool manualTemp;
 }state;
 
 static struct file_operations fops = {
@@ -92,20 +93,30 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 	bool century = false, format = false;	
 	s32 year,month,day,hour,minute,second;
 	char date[29] = {""}, monthWord[10]={""};
-
+	printk("Temperatur: %d\n",state.temperature);
 	if(busy){
 		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
 		return -EBUSY;
 	}
-        busy = true;
 	
-	
-	if(check_state()){
-		printk("DS3231_drv: OSF nicht aktiv!\n");
-		return -EAGAIN;
+	if(!state.manualTemp){
+		if(check_state()){
+			printk("DS3231_drv: OSF nicht aktiv!\n");
+			return -EAGAIN;
+		}
 	}
-	
-	printk("Temperatur: %d\n", state.temperature);
+	else state.manualTemp = false;
+	if(state.temperature < -40){
+			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
+	}
+	else if(state.temperature > 85){
+		printk("DS3231_drv: Die Temperatur ist sehr warm\n");
+	}
+	if(state.bsy){ /*Busy von RTC*/
+		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+		return -EBUSY;
+	}
+    busy = true;	
 
 	while(puffer[count++] != '\0');
 	if(count < 21){
@@ -243,6 +254,12 @@ static int atoi(int n, char *string){
 	temp = (string[n]-'0')*10+(string[n+1]-'0');
 	return temp;
 }
+static int atoiDrei(int n, char *string){
+	if(string[n+1] == '\0')return -1;
+	if(string[n+2] == '\0') return string[n]-'0';
+	if(string[n+3]	== '\0')return ((string[n]-'0')*10+(string[n+1]-'0'));
+	return ((string[n]-'0')*100+(string[n+1]-'0')*10+(string[n+2]-'0'));
+}
 
 static bool checkDate(int day, int month, int century, int year, int hour, int minute, int second) {
     int jahr = 0;
@@ -271,56 +288,79 @@ static bool checkDate(int day, int month, int century, int year, int hour, int m
 
 static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
 	char date[20] = "";
-	int count = copy_from_user(date,puffer,bytes);
+	int count = copy_from_user(date,puffer,bytes),temp;
 	int year,month,day,hour,minutes,seconds,century;
 	bool century_check;
 
 	if(busy){
-                printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
-                return -EBUSY;
-                }
-        busy = true;
-
-
-	
-	century = atoi(0, date);
-	year = atoi(2, date);
-	month = atoi(5, date);
-	day = atoi(8,date);
-	hour = atoi(11,date);
-	minutes = atoi(14,date);
-	seconds = atoi(17,date);
-
-	if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':'){
-		printk("DS3231_drv: Format falsch! >:( \n");
-		busy = false;
-		return -EINVAL;
+		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+		return -EBUSY;
 	}
- 
-	if(!checkDate(day,month,century,year,hour,minutes,seconds)){
-		if(century < 20 || century > 21){
-		 printk("DS3231_drv: Werte ausserhalb des Wertebereichs!\n");
-		 busy = false;
-		 return -EOVERFLOW;
+	if(check_state()){
+		printk("DS3231_drv: OSF nicht aktiv!\n");
+		return -EAGAIN;
+	}
+	if(state.bsy){ /*Busy von RTC*/
+		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+		return -EBUSY;
+	}
+    busy = true;
+	if(date[0] == '?'){
+		if(date[1] == '-'){
+			temp = atoiDrei(2,date);
+			temp *= -1;
+			state.temperature =temp;
 		}
-		printk("DS3231_drv: Datum existiert nicht!\n");
-		busy = false;
-		return -EINVAL;
-	} 
-	
-	if(century == 21){
-		century_check = true;
-	} 
-	else{
-		century_check = false;
+		else{
+			temp = atoiDrei(1,date);
+			state.temperature =temp;
+		}
+	}	
+	else {
+		if(state.temperature < -40){
+			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
+		}
+		else if(state.temperature > 85){
+			printk("DS3231_drv: Die Temperatur ist sehr warm\n");
+		}
+		century = atoi(0, date);
+		year = atoi(2, date);
+		month = atoi(5, date);
+		day = atoi(8,date);
+		hour = atoi(11,date);
+		minutes = atoi(14,date);
+		seconds = atoi(17,date);
+
+		if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':'){
+			printk("DS3231_drv: Format falsch! >:( \n");
+			busy = false;
+			return -EINVAL;
+		}
+	 
+		if(!checkDate(day,month,century,year,hour,minutes,seconds)){
+			if(century < 20 || century > 21){
+			 printk("DS3231_drv: Werte ausserhalb des Wertebereichs!\n");
+			 busy = false;
+			 return -EOVERFLOW;
+			}
+			printk("DS3231_drv: Datum existiert nicht!\n");
+			busy = false;
+			return -EINVAL;
+		} 
+		
+		if(century == 21){
+			century_check = true;
+		} 
+		else{
+			century_check = false;
+		}
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds/10) << 4) | (seconds%10)));
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes/10) << 4) | (minutes%10))); 
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour/10) << 4) | (hour%10)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day/10) << 4) | (day%10)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month/10) << 4) | (month%10) | (century_check << 7)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year/10) << 4) | (year%10)));
 	}
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds/10) << 4) | (seconds%10)));
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes/10) << 4) | (minutes%10))); 
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour/10) << 4) | (hour%10)));	
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day/10) << 4) | (day%10)));	
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month/10) << 4) | (month%10) | (century_check << 7)));	
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year/10) << 4) | (year%10)));
-	
 	busy = false;
 	return bytes-count;
 }
@@ -439,6 +479,7 @@ static int __init ds3231_init(void)
 	const struct i2c_board_info info = {
 		I2C_BOARD_INFO("ds3231_drv", 0x68)
 	};
+	state.manualTemp = false;
 	printk("DS3231_drv: ds3231_module_init aufgerufen\n");
 	
 	/*
