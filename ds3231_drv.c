@@ -295,15 +295,25 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
 		return -EBUSY;
 	}
-	if(check_state()){
-		printk("DS3231_drv: OSF nicht aktiv!\n");
-		return -EAGAIN;
+	if(!state.manualTemp){
+		if(check_state()){
+			printk("DS3231_drv: OSF nicht aktiv!\n");
+			return -EAGAIN;
+		}
+	}
+	else state.manualTemp = false;
+	if(state.temperature < -40){
+			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
+	}
+	else if(state.temperature > 85){
+		printk("DS3231_drv: Die Temperatur ist sehr warm\n");
 	}
 	if(state.bsy){ /*Busy von RTC*/
-		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+		printk("DS3231_drv: Die RTC ist beschaeftigt!\n");
 		return -EBUSY;
 	}
     busy = true;
+	
 	if(date[0] == '?'){
 		state.manualTemp = true;
 		if(date[1] == '-'){
@@ -313,7 +323,7 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 		}
 		else{
 			temp = atoiDrei(1,date);
-			state.temperature =temp;
+			state.temperature = temp;
 		}
 	}	
 	else {
