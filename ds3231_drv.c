@@ -93,33 +93,32 @@ static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, lo
 	bool century = false, format = false;	
 	s32 year,month,day,hour,minute,second;
 	char date[29] = {""}, monthWord[10]={""};
-	printk("Temperatur: %d\n",state.temperature);
+	
 	if(busy){
 		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
 		return -EBUSY;
-	}
-	
-	if(!state.manualTemp){
-		if(check_state()){
-			printk("DS3231_drv: OSF nicht aktiv!\n");
-			return -EAGAIN;
-		}
-	}
-	else state.manualTemp = false;
-	if(state.temperature < -40){
-			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
-	}
-	else if(state.temperature > 85){
-		printk("DS3231_drv: Die Temperatur ist sehr warm\n");
-	}
-	if(state.bsy){ /*Busy von RTC*/
-		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
-		return -EBUSY;
-	}
-    busy = true;	
+	}	
+    busy = true;
 
 	while(puffer[count++] != '\0');
 	if(count < 21){
+		if(!state.manualTemp){
+			if(check_state()){
+				printk("DS3231_drv: OSF nicht aktiv!\n");
+				return -EAGAIN;
+			}
+		}
+		else state.manualTemp = false;
+		if(state.temperature < -40){
+				printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
+		}
+		else if(state.temperature > 85){
+			printk("DS3231_drv: Die Temperatur ist sehr warm\n");
+		}
+		if(state.bsy){ /*Busy von RTC*/
+			printk("DS3231_drv: Die RTC ist beschaeftigt!\n");
+			return -EBUSY;
+		}
 		year = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
 		month = i2c_smbus_read_byte_data(ds3231_client,DS3231_MONTH);
 		day = i2c_smbus_read_byte_data(ds3231_client,DS3231_DAY);
@@ -306,10 +305,11 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 	}
     busy = true;
 	if(date[0] == '?'){
+		state.manualTemp = true;
 		if(date[1] == '-'){
 			temp = atoiDrei(2,date);
 			temp *= -1;
-			state.temperature =temp;
+			state.temperature = temp;
 		}
 		else{
 			temp = atoiDrei(1,date);
