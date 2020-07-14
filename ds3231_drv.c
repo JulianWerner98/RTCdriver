@@ -23,7 +23,7 @@
 # define DS3231_BIT_OSF		0x80
 # define DS3231_YEAR		0x06
 # define DS3231_MONTH		0x05
-# define DS3231_DAY		0x04
+# define DS3231_DAY			0x04
 # define DS3231_HOUR		0x02
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
@@ -47,7 +47,6 @@ static struct i2c_client *ds3231_client;
 static dev_t rtc_dev;
 static struct cdev rtc_cdev;
 static struct class *rtc_devclass;
-static bool busy = false;
 static struct statusInfo {
 		bool osf;
 		bool bsy;
@@ -63,6 +62,7 @@ static struct file_operations fops = {
 	.open		= dev_open,
 	.release 	= dev_close,
 };
+struct mutex etx_mutex;
 
 static bool check_state(void){
 	/*Überprüfung des OSF, BSF und der Termperatur des RTCs*/
@@ -82,6 +82,10 @@ static bool check_state(void){
 }
 
 static int dev_open(struct inode *inode_open, struct file *file_open){
+	if (mutex_is_locked(&etx_mutex)){
+		printk("DS3231_drv: Der Treiber arbeitet gerade, aber du bist in der Warteschlange\n");
+	}
+	mutex_lock(&etx_mutex);
 	if(!state.manualTemp){
 		if(check_state()){
 			printk("DS3231_drv: OSF nicht aktiv!\n");
@@ -103,6 +107,7 @@ static int dev_open(struct inode *inode_open, struct file *file_open){
 }
 
 static int dev_close(struct inode *inode_close, struct file *file_close){
+	mutex_unlock(&etx_mutex);
 	return 0;
 }
 
@@ -116,12 +121,7 @@ static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t
 	char string_read[3];
 	bool century_read = false, format = false;	
 	s32 year_read,month_read,day_read,hour_read,minute_read,second_read;
-	char date_read[29] = {""}, monthWord[10]={""};	
-	if(busy){ /* Lesen verhindern, falls Driver beschaeftigt */
-		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
-		return -EBUSY;
-	}	
-    busy = true; /* Treiber auf "beschaeftigt" setzten*/
+	char date_read[29] = {""}, monthWord[10]={""};
 	
 	while(puffer_read[count_read++] != '\0'); /* */
 	if(count_read < 21){ /*Es wurde noch kein vollstaendiges Datum geschrieben*/
@@ -135,7 +135,6 @@ static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t
 		
 		if(year_read < 0 || month_read < 0 || day_read < 0 || hour_read < 0 || minute_read < 0 || second_read < 0) {
 			/*Fehler beim Lesen, nochmal Versuchen*/
-			busy = false;
 			return 0;
 		}
 		if(month_read >>7) { /* Centurybit -> 2000-2099 -> false, 2100-2199 -> true */
@@ -193,10 +192,8 @@ static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t
                         strcat(date_read,"\n");
                 }		
 		count_read = copy_to_user(puffer_read,date_read,sizeof(date_read));
-		busy = false;
 		return sizeof(date_read) - count_read;
 	}
-	busy = false; /*Nicht mehr beschaeftigt*/
 	return 0;
 }
 void translateMonth(int month_translate,char *string_translate) {
@@ -304,17 +301,13 @@ static bool check_date(int day_check, int month_check, int century_check, int ye
 }
 
 static ssize_t dev_write(struct file *file_write, const char __user *puffer_write, size_t bytes, loff_t *offset_write){
+	/* Write Funktion des Treibers
+	 * 
+	 */
 	char date_write[20] = "";
 	int count_write = copy_from_user(date_write,puffer_write,bytes),temp;
 	int year_write,month_write,day_write,hour_write,minutes_write,seconds_write,century_write;
-	bool century_check_write;
-
-	if(busy){
-		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
-		return -EBUSY;
-	}
-    busy = true;
-	
+	bool century_check_write;	
 	if(date_write[0] == '?'){
 		state.manualTemp = true;
 		if(date_write[1] == '-'){
@@ -344,18 +337,15 @@ static ssize_t dev_write(struct file *file_write, const char __user *puffer_writ
 
 		if(date_write[4] != '-' || date_write[7] != '-' || date_write[10] != ' ' || date_write[13] != ':' || date_write[16] != ':'){
 			printk("DS3231_drv: Format falsch! >:( \n");
-			busy = false;
 			return -EINVAL;
 		}
 	 
 		if(!check_date(day_write,month_write,century_write,year_write,hour_write,minutes_write,seconds_write)){
 			if(century_write < 20 || century_write > 21){
 			 printk("DS3231_drv: Werte ausserhalb des Wertebereichs!\n");
-			 busy = false;
 			 return -EOVERFLOW;
 			}
 			printk("DS3231_drv: Datum existiert nicht!\n");
-			busy = false;
 			return -EINVAL;
 		} 
 		
@@ -372,7 +362,6 @@ static ssize_t dev_write(struct file *file_write, const char __user *puffer_writ
 		i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month_write/10) << 4) | (month_write%10) | (century_check_write << 7)));	
 		i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year_write/10) << 4) | (year_write%10)));
 	}
-	busy = false;
 	return bytes-count_write;
 }
 
@@ -489,6 +478,7 @@ static int __init ds3231_init(void)
 	const struct i2c_board_info info = {
 		I2C_BOARD_INFO("ds3231_drv", 0x68)
 	};
+	mutex_init(&etx_mutex);
 	state.manualTemp = false;
 	printk("DS3231_drv: ds3231_module_init aufgerufen\n");
 	
@@ -574,7 +564,7 @@ static void __exit ds3231_exit(void)
 	class_destroy(rtc_devclass);
 	cdev_del(&rtc_cdev);
 	unregister_chrdev_region(rtc_dev, 1);
-	printk("Treiber entladen\n");
+	printk("DS3231_drv: Treiber entladen\n");
 	if(ds3231_client != NULL) {
 		i2c_del_driver(&ds3231_driver);
 		i2c_unregister_device(ds3231_client);
