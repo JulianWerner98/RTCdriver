@@ -11,6 +11,7 @@
 #include <asm/errno.h>
 #include <asm/delay.h>
 #include <uapi/linux/string.h>
+#include <linux/mutex.h>
 
 /* Register Definitionen */
 #define DS3231_REG_CONTROL	0x0e
@@ -22,21 +23,21 @@
 # define DS3231_BIT_OSF		0x80
 # define DS3231_YEAR		0x06
 # define DS3231_MONTH		0x05
-# define DS3231_DAY			0x04
+# define DS3231_DAY		0x04
 # define DS3231_HOUR		0x02
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
 # define DS3231_TEMP_MSB	0x11
 
 
-static int dev_open(struct inode *inode, struct file *file);
-static int dev_close(struct inode *inode, struct file *file);
-static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset);
-static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset);
-static bool itoa(int n,char *string);
-static int atoi(int n,char *string);
-void translateMonth(int,char*);		//TO-DO: Konsistente Funktionennamen!
-static bool checkDate(int, int, int, int, int, int, int);
+static int dev_open(struct inode *, struct file *);
+static int dev_close(struct inode *, struct file *);
+static ssize_t dev_read(struct file *, char __user *, size_t, loff_t *);
+static ssize_t dev_write(struct file *, const char __user *, size_t, loff_t *);
+static bool itoa(int,char *);
+static int atoi(int,char *);
+void translateMonth(int,char *);		//TO-DO: Konsistente Funktionennamen!
+static bool check_date(int, int, int, int, int, int, int);
 static bool check_state(void);
 /*
  * Der Zeiger wird bei Initialisierung gesetzt und wird für die
@@ -64,237 +65,23 @@ static struct file_operations fops = {
 };
 
 static bool check_state(void){
-	s32 tempMSB,status;
-	int zwischenspeicher = 0;	//signed war hier bruder
-	status = i2c_smbus_read_byte_data(ds3231_client,DS3231_REG_STATUS);
+	/*Überprüfung des OSF, BSF und der Termperatur des RTCs*/
+	s32 tempMSB,status_check;
+	int rueckgabewert_check_state = 0; /**/
+	status_check = i2c_smbus_read_byte_data(ds3231_client,DS3231_REG_STATUS);
 	tempMSB = i2c_smbus_read_byte_data(ds3231_client,DS3231_TEMP_MSB);
-	state.osf = status & 0x80;
-	state.bsy = status & 0x04;
-	zwischenspeicher = tempMSB & 0x7F; 
-	if(tempMSB & 0x80) zwischenspeicher *= -1;
-	state.temperature = zwischenspeicher;
+	state.osf = status_check & 0x80; /*Bit 8 ist das OSF Bit*/
+	state.bsy = status_check & 0x04; /*Bit 3 ist das BSY Bit*/
+	rueckgabewert_check_state = tempMSB & 0x7F; /*Temperatur ohne Vorzeichen abspeichern*/
+	if(tempMSB & 0x80) rueckgabewert_check_state *= -1;/*Vorzeichen Überprüfung*/
+	state.temperature = rueckgabewert_check_state;
 	if(!state.osf) return false;
-	i2c_smbus_write_byte_data(ds3231_client,DS3231_REG_STATUS,status & 0x7F);
+	/*OSF war nicht aktiv und wird nun aktiviert*/
+	i2c_smbus_write_byte_data(ds3231_client,DS3231_REG_STATUS,status_check & 0x7F);
 	return true;	
 }
 
-static int dev_open(struct inode *inode, struct file *file){
-	return 0;
-}
-
-static int dev_close(struct inode *inode, struct file *file){
-	return 0;
-}
-
-static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
-
-	int count = 0;
-	char string[3];
-	bool century = false, format = false;	
-	s32 year,month,day,hour,minute,second;
-	char date[29] = {""}, monthWord[10]={""};
-	
-	if(busy){
-		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
-		return -EBUSY;
-	}	
-    busy = true;
-
-	while(puffer[count++] != '\0');
-	if(count < 21){
-		if(!state.manualTemp){
-			if(check_state()){
-				printk("DS3231_drv: OSF nicht aktiv!\n");
-				return -EAGAIN;
-			}
-		}
-		else state.manualTemp = false;
-		if(state.temperature < -40){
-				printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
-		}
-		else if(state.temperature > 85){
-			printk("DS3231_drv: Die Temperatur ist sehr warm\n");
-		}
-		if(state.bsy){ /*Busy von RTC*/
-			printk("DS3231_drv: Die RTC ist beschaeftigt!\n");
-			return -EBUSY;
-		}
-		year = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
-		month = i2c_smbus_read_byte_data(ds3231_client,DS3231_MONTH);
-		day = i2c_smbus_read_byte_data(ds3231_client,DS3231_DAY);
-		hour = i2c_smbus_read_byte_data(ds3231_client,DS3231_HOUR);
-		minute = i2c_smbus_read_byte_data(ds3231_client,DS3231_MINUTE);
-		second = i2c_smbus_read_byte_data(ds3231_client,DS3231_SECOND);
-		
-		if(year < 0 || month < 0 || day < 0 || hour < 0 || minute < 0 || second < 0) {
-			busy = false;
-			return 0;
-		}
-		if(month >>7) { /* Centurybit -> 2000-2099 -> false, 2100-2199 -> true */
-			century = true;
-			month &= 0x7F; /*Bit löschen*/
-		}
-		if(hour >> 6) {/*12(true) or 24(false) Format*/
-			format = true;
-		}
-		year = ((year>>4)*10) + (year & 0xF);
-		month = ((month>>4)*10) + (month & 0xF);
-		day = ((day>>4)*10) + (day & 0xF);
-		minute = ((minute>>4)*10) + (minute & 0xF);
-		second = ((second>>4)*10) + (second & 0xF);
-		if(format) { /*12 Stunden Format*/
-			if(hour & 0x20) {
-				hour = 12 + (hour & 0xF) + (((hour & 0x10)>>4)*10); 
-			} 
-			else {
-				hour = (hour & 0xF) + (((hour & 0x10)>>4)*10);
-			}
-		}
-		else { /*24 Stunden Format*/
-			hour = (hour & 0xF) + (((hour & 0x10)>>4)*10) + (((hour & 0x20)>>5)*20);
-		}
-		/*Ab hier haben die s32 die korrekten Werte!*/	
-		translateMonth(month,monthWord);
-		if(itoa(day,string)) {
-			strcat(date,string);
-			strcat(date,". ");
-		}
-		strcat(date,monthWord);
-		strcat(date," ");
-		if(itoa(hour,string)) {
-                        strcat(date,string);
-                        strcat(date,":");
-                }
-		if(itoa(minute,string)) {
-                        strcat(date,string);
-                        strcat(date,":");
-                }
-		if(itoa(second,string)) {
-                        strcat(date,string);
-                        strcat(date," ");
-                }
-		if(century){
-			strcat(date,"21");
-		}
-		else {
-			strcat(date,"20");
-		}
-		if(itoa(year,string)) {
-                        strcat(date,string);
-                        strcat(date,"\n");
-                }		
-		count = copy_to_user(puffer,date,sizeof(date));
-		busy = false;
-		return sizeof(date) - count;
-	}
-	busy = false;
-	return 0;
-}
-void translateMonth(int month,char *string) {
-	switch(month) {
-		case 1:
-			strcpy(string,"Januar");
-			break;
-		case 2:
-                        strcpy(string,"Februar");
-                        break;
-		case 3:
-                        strcpy(string,"Maerz");
-                        break;
-		case 4:
-                        strcpy(string,"April");
-                        break;
-		case 5:
-                        strcpy(string,"Mai");
-                        break;
-		case 6:
-                        strcpy(string,"Juni");
-                        break;
-		case 7:
-                        strcpy(string,"Juli");
-                        break;
-		case 8:
-                        strcpy(string,"August");
-                        break;
-		case 9:
-                        strcpy(string,"September");
-                        break;
-		case 10:
-                        strcpy(string,"Oktober");
-                        break;
-		case 11:
-                        strcpy(string,"November");
-                        break;
-		case 12:
-                        strcpy(string,"Dezember");
-	}
-}
- 
-static bool itoa(int n, char *string){
-	if(n > 99 || n < 0){
-		return false;
-	}
-	string[2] = '\0';
-	if(n < 10){
-		string[0] = '0';
-	}
-	else{
-		string[0] = (n/10)+'0';
-	}
-	string[1] = (n % 10)+'0';
-	return true; 
-}
-
-static int atoi(int n, char *string){
-	int temp;
-	int convert = string[n];
-	int convert2 = string[n+1];	
-	if((convert < '0' || convert > '9') || (convert2 < '0' || convert2 > '9')) return -1;
-	temp = (string[n]-'0')*10+(string[n+1]-'0');
-	return temp;
-}
-static int atoiDrei(int n, char *string){
-	if(string[n+1] == '\0')return -1;
-	if(string[n+2] == '\0') return string[n]-'0';
-	if(string[n+3]	== '\0')return ((string[n]-'0')*10+(string[n+1]-'0'));
-	return ((string[n]-'0')*100+(string[n+1]-'0')*10+(string[n+2]-'0'));
-}
-
-static bool checkDate(int day, int month, int century, int year, int hour, int minute, int second) {
-    int jahr = 0;
-    if(day < 1 || day > 31) return false;
-    if(month < 1 || month > 12) return false;
-    if(year < 0) return false;
-    if(century != 20 && century != 21) return false;
-    if(hour < 0 || hour > 24) return false;
-    if(minute < 0 || minute > 59) return false;
-    if(second < 0 || second > 59) return false;
-    if(day < 29) return true;
-    if(month != 2) {
-        if(day < 31) return true;
-        if(month == 1 || month == 3 ||month == 5 ||month == 7 ||month == 8 ||month == 10 ||month == 12) return true;
-        return false;
-    }
-    else {
-        if(day > 29) return false;
-        jahr = (1000 * century) + year;
-        if( (!(jahr %4)) && jahr%100) return true;
-        if( (!(jahr %100)) && jahr%400) return false;
-        if((!(jahr %400))) return true;
-        return false;
-    }
-}
-
-static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
-	char date[20] = "";
-	int count = copy_from_user(date,puffer,bytes),temp;
-	int year,month,day,hour,minutes,seconds,century;
-	bool century_check;
-
-	if(busy){
-		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
-		return -EBUSY;
-	}
+static int dev_open(struct inode *inode_open, struct file *file_open){
 	if(!state.manualTemp){
 		if(check_state()){
 			printk("DS3231_drv: OSF nicht aktiv!\n");
@@ -312,17 +99,231 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 		printk("DS3231_drv: Die RTC ist beschaeftigt!\n");
 		return -EBUSY;
 	}
+	return 0;
+}
+
+static int dev_close(struct inode *inode_close, struct file *file_close){
+	return 0;
+}
+
+static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t bytes_read, loff_t *offset_read){
+	/* 
+	 * Read Funktion des Treibers
+	 * Liest das Datum aus der RTC und übermittelt es in den Userspace
+	 * Außerdem überprüfung verschiedener Parameter 
+	 */
+	int count_read = 0;
+	char string_read[3];
+	bool century_read = false, format = false;	
+	s32 year_read,month_read,day_read,hour_read,minute_read,second_read;
+	char date_read[29] = {""}, monthWord[10]={""};	
+	if(busy){ /* Lesen verhindern, falls Driver beschaeftigt */
+		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+		return -EBUSY;
+	}	
+    busy = true; /* Treiber auf "beschaeftigt" setzten*/
+	
+	while(puffer_read[count_read++] != '\0'); /* */
+	if(count_read < 21){ /*Es wurde noch kein vollstaendiges Datum geschrieben*/
+		/*Alle Werte aus RTC holen*/
+		year_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
+		month_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_MONTH);
+		day_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_DAY);
+		hour_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_HOUR);
+		minute_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_MINUTE);
+		second_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_SECOND);
+		
+		if(year_read < 0 || month_read < 0 || day_read < 0 || hour_read < 0 || minute_read < 0 || second_read < 0) {
+			/*Fehler beim Lesen, nochmal Versuchen*/
+			busy = false;
+			return 0;
+		}
+		if(month_read >>7) { /* Centurybit -> 2000-2099 -> false, 2100-2199 -> true */
+			century_read = true;
+			month_read &= 0x7F; /*Bit löschen*/
+		}
+		if(hour_read >> 6) {/*12(true) or 24(false) Format*/
+			format = true;
+		}
+		year_read = ((year_read>>4)*10) + (year_read & 0xF);
+		month_read = ((month_read>>4)*10) + (month_read & 0xF);
+		day_read = ((day_read>>4)*10) + (day_read & 0xF);
+		minute_read = ((minute_read>>4)*10) + (minute_read & 0xF);
+		second_read = ((second_read>>4)*10) + (second_read & 0xF);
+		if(format) { /*12 Stunden Format*/
+			if(hour_read & 0x20) {
+				hour_read = 12 + (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10); 
+			} 
+			else {
+				hour_read = (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10);
+			}
+		}
+		else { /*24 Stunden Format*/
+			hour_read = (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10) + (((hour_read & 0x20)>>5)*20);
+		}
+		/*Ab hier haben die s32 die korrekten Werte!
+		  und der String wird "zusammen gebaut"*/	
+		translateMonth(month_read,monthWord);
+		if(itoa(day_read,string_read)) {
+			strcat(date_read,string_read);
+			strcat(date_read,". ");
+		}
+		strcat(date_read,monthWord);
+		strcat(date_read," ");
+		if(itoa(hour_read,string_read)) {
+                        strcat(date_read,string_read);
+                        strcat(date_read,":");
+                }
+		if(itoa(minute_read,string_read)) {
+                        strcat(date_read,string_read);
+                        strcat(date_read,":");
+                }
+		if(itoa(second_read,string_read)) {
+                        strcat(date_read,string_read);
+                        strcat(date_read," ");
+                }
+		if(century_read){
+			strcat(date_read,"21");
+		}
+		else {
+			strcat(date_read,"20");
+		}
+		if(itoa(year_read,string_read)) {
+                        strcat(date_read,string_read);
+                        strcat(date_read,"\n");
+                }		
+		count_read = copy_to_user(puffer_read,date_read,sizeof(date_read));
+		busy = false;
+		return sizeof(date_read) - count_read;
+	}
+	busy = false; /*Nicht mehr beschaeftigt*/
+	return 0;
+}
+void translateMonth(int month_translate,char *string_translate) {
+	/*Wandelt die Monatszahl(month_translate) in einen String um und speichert den in string_translate*/
+	switch(month_translate) {
+		case 1:
+			strcpy(string_translate,"Januar");
+			break;
+		case 2:
+			strcpy(string_translate,"Februar");
+			break;
+		case 3:
+			strcpy(string_translate,"Maerz");
+			break;
+		case 4:
+			strcpy(string_translate,"April");
+			break;
+		case 5:
+			strcpy(string_translate,"Mai");
+			break;
+		case 6:
+			strcpy(string_translate,"Juni");
+			break;
+		case 7:
+			strcpy(string_translate,"Juli");
+			break;
+		case 8:
+			strcpy(string_translate,"August");
+			break;
+		case 9:
+			strcpy(string_translate,"September");
+			break;
+		case 10:
+			strcpy(string_translate,"Oktober");
+			break;
+		case 11:
+			strcpy(string_translate,"November");
+			break;
+		case 12:
+			strcpy(string_translate,"Dezember");
+	}
+}
+ 
+static bool itoa(int zahl_itoa, char *string_itoa){
+	/* Integer to Array
+	 * Wandelt den Int in ein zweistelliges Char Array um
+	 * Ist die Zahl mehr als zweistellig wird false zurück geben, ansonsten true*/
+	if(zahl_itoa > 99 || zahl_itoa < 0){
+		return false;
+	}
+	string_itoa[2] = '\0';
+	if(zahl_itoa < 10){
+		string_itoa[0] = '0';
+	}
+	else{
+		string_itoa[0] = (zahl_itoa/10)+'0';
+	}
+	string_itoa[1] = (zahl_itoa % 10)+'0';
+	return true; 
+}
+
+static int atoi(int zahl_atoi, char *string_atoi){
+	/* Array to Integer
+	 * Wandelt string_atoi in einen Integer um
+	 * Zusätzliche Überprüfung von richtigen Daten/Zeichen*/
+	int rueckgabe_atoi;
+	int convert = string_atoi[zahl_atoi],convert2 = string_atoi[zahl_atoi+1];	
+	if((convert < '0' || convert > '9') || (convert2 < '0' || convert2 > '9')) return -1;
+	rueckgabe_atoi = (string_atoi[zahl_atoi]-'0')*10+(string_atoi[zahl_atoi+1]-'0');
+	return rueckgabe_atoi;
+}
+static int atoiDrei(int zahl_atoiDrei, char *string_atoiDrei){
+	/* Array to Integer
+	 * Wandelt string_atoi in einen 0-3 Stelligen Integer um*/
+	if(string_atoiDrei[zahl_atoiDrei+1] == '\0')return -1;
+	if(string_atoiDrei[zahl_atoiDrei+2] == '\0') return string_atoiDrei[zahl_atoiDrei]-'0';
+	if(string_atoiDrei[zahl_atoiDrei+3]	== '\0')return ((string_atoiDrei[zahl_atoiDrei]-'0')*10+(string_atoiDrei[zahl_atoiDrei+1]-'0'));
+	return ((string_atoiDrei[zahl_atoiDrei]-'0')*100+(string_atoiDrei[zahl_atoiDrei+1]-'0')*10+(string_atoiDrei[zahl_atoiDrei+2]-'0'));
+}
+
+static bool check_date(int day_check, int month_check, int century_check, int year_check, int hour_check, int minute_check, int second_check) {
+	/* Prüft das Datum auf Richtigkeit und gibt beim Fehler false zurueck */
+    int jahr = 0;
+    if(day_check < 1 || day_check > 31) return false;
+    if(month_check < 1 || month_check > 12) return false;
+    if(year_check < 0) return false;
+    if(century_check != 20 && century_check != 21) return false;
+    if(hour_check < 0 || hour_check > 24) return false;
+    if(minute_check < 0 || minute_check > 59) return false;
+    if(second_check < 0 || second_check > 59) return false;
+    if(day_check < 29) return true;
+    if(month_check != 2) {
+        if(day_check < 31) return true;
+        if(month_check == 1 || month_check == 3 ||month_check == 5 ||month_check == 7 ||month_check == 8 ||month_check == 10 ||month_check == 12) return true;
+        return false;
+    }
+    else {
+        if(day_check > 29) return false;
+        jahr = (1000 * century_check) + year_check;
+        if( (!(jahr %4)) && jahr%100) return true;
+        if( (!(jahr %100)) && jahr%400) return false;
+        if((!(jahr %400))) return true;
+        return false;
+    }
+}
+
+static ssize_t dev_write(struct file *file_write, const char __user *puffer_write, size_t bytes, loff_t *offset_write){
+	char date_write[20] = "";
+	int count_write = copy_from_user(date_write,puffer_write,bytes),temp;
+	int year_write,month_write,day_write,hour_write,minutes_write,seconds_write,century_write;
+	bool century_check_write;
+
+	if(busy){
+		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+		return -EBUSY;
+	}
     busy = true;
 	
-	if(date[0] == '?'){
+	if(date_write[0] == '?'){
 		state.manualTemp = true;
-		if(date[1] == '-'){
-			temp = atoiDrei(2,date);
+		if(date_write[1] == '-'){
+			temp = atoiDrei(2,date_write);
 			temp *= -1;
 			state.temperature = temp;
 		}
 		else{
-			temp = atoiDrei(1,date);
+			temp = atoiDrei(1,date_write);
 			state.temperature = temp;
 		}
 	}	
@@ -333,22 +334,22 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 		else if(state.temperature > 85){
 			printk("DS3231_drv: Die Temperatur ist sehr warm\n");
 		}
-		century = atoi(0, date);
-		year = atoi(2, date);
-		month = atoi(5, date);
-		day = atoi(8,date);
-		hour = atoi(11,date);
-		minutes = atoi(14,date);
-		seconds = atoi(17,date);
+		century_write = atoi(0, date_write);
+		year_write = atoi(2, date_write);
+		month_write = atoi(5, date_write);
+		day_write = atoi(8,date_write);
+		hour_write = atoi(11,date_write);
+		minutes_write = atoi(14,date_write);
+		seconds_write = atoi(17,date_write);
 
-		if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':'){
+		if(date_write[4] != '-' || date_write[7] != '-' || date_write[10] != ' ' || date_write[13] != ':' || date_write[16] != ':'){
 			printk("DS3231_drv: Format falsch! >:( \n");
 			busy = false;
 			return -EINVAL;
 		}
 	 
-		if(!checkDate(day,month,century,year,hour,minutes,seconds)){
-			if(century < 20 || century > 21){
+		if(!check_date(day_write,month_write,century_write,year_write,hour_write,minutes_write,seconds_write)){
+			if(century_write < 20 || century_write > 21){
 			 printk("DS3231_drv: Werte ausserhalb des Wertebereichs!\n");
 			 busy = false;
 			 return -EOVERFLOW;
@@ -358,21 +359,21 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
 			return -EINVAL;
 		} 
 		
-		if(century == 21){
-			century_check = true;
+		if(century_write == 21){
+			century_check_write = true;
 		} 
 		else{
-			century_check = false;
+			century_check_write = false;
 		}
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds/10) << 4) | (seconds%10)));
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes/10) << 4) | (minutes%10))); 
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour/10) << 4) | (hour%10)));	
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day/10) << 4) | (day%10)));	
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month/10) << 4) | (month%10) | (century_check << 7)));	
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year/10) << 4) | (year%10)));
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds_write/10) << 4) | (seconds_write%10)));
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes_write/10) << 4) | (minutes_write%10))); 
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour_write/10) << 4) | (hour_write%10)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day_write/10) << 4) | (day_write%10)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month_write/10) << 4) | (month_write%10) | (century_check_write << 7)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year_write/10) << 4) | (year_write%10)));
 	}
 	busy = false;
-	return bytes-count;
+	return bytes-count_write;
 }
 
 
@@ -384,18 +385,17 @@ static ssize_t dev_write(struct file *file, const char __user *puffer, size_t by
  * Treiber passende Device-Information gefunden wurde. Innerhalb der Funktion
  * wird der Treiber und das Device initialisiert.
  */
-static int ds3231_probe(struct i2c_client *client, const struct i2c_device_id *id)
+static int ds3231_probe(struct i2c_client *client_probe, const struct i2c_device_id *id)
 {	
 	s32 reg0, reg1;
 	u8 reg_cnt, reg_sts;
-
 	printk("DS3231_drv: ds3231_probe called\n");
 
 	/*
 	 * Control und Status Register auslesen.
 	 */
-	reg0 = i2c_smbus_read_byte_data(client, DS3231_REG_CONTROL);
-	reg1 = i2c_smbus_read_byte_data(client, DS3231_REG_STATUS);
+	reg0 = i2c_smbus_read_byte_data(client_probe, DS3231_REG_CONTROL);
+	reg1 = i2c_smbus_read_byte_data(client_probe, DS3231_REG_STATUS);
 	if(reg0 < 0 || reg1 < 0) {
 		printk("DS3231_drv: Fehler beim Lesen von Control oder Status Register.\n");
 		return -ENODEV;
@@ -417,7 +417,7 @@ static int ds3231_probe(struct i2c_client *client, const struct i2c_device_id *i
 	reg_cnt &= ~(DS3231_BIT_INTCN | DS3231_BIT_A2IE | DS3231_BIT_A1IE);
 
 	/* Control-Register setzen */
-	i2c_smbus_write_byte_data(client, DS3231_REG_CONTROL, reg_cnt);
+	i2c_smbus_write_byte_data(client_probe, DS3231_REG_CONTROL, reg_cnt);
 
 	/*
 	 * Prüfe Oscilator zustand. Falls Fehler vorhanden, wird das Fehlerfalg
@@ -425,7 +425,7 @@ static int ds3231_probe(struct i2c_client *client, const struct i2c_device_id *i
 	 */
 	if (reg_sts & DS3231_BIT_OSF) {
 		reg_sts &= ~DS3231_BIT_OSF;
-		i2c_smbus_write_byte_data(client, DS3231_REG_STATUS, reg_sts);
+		i2c_smbus_write_byte_data(client_probe, DS3231_REG_STATUS, reg_sts);
 		printk("DS3231_drv: Oscilator Stop Flag (OSF) zurückgesetzt.\n");
 	}
 
@@ -441,7 +441,7 @@ static int ds3231_probe(struct i2c_client *client, const struct i2c_device_id *i
  * von Linux-Kernel aufgerufen. Hier sollten die Resourcen, welche
  * in der "ds3231_probe()" Funktion angefordert wurden, freigegeben.
  */
-static int ds3231_remove(struct i2c_client *client)
+static int ds3231_remove(struct i2c_client *client_remove)
 {
 	printk("DS3231_drv: ds3231_remove called\n");
 	return 0;
