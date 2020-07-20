@@ -1,3 +1,22 @@
+/*******************************************************************************
+* Institut für Rechnerarchitektur und Systemprogrammierung *
+* Universität Kassel *
+*******************************************************************************
+* Benutzeraccount : 	sysprog-03
+*******************************************************************************
+* Author-1 : 		Alexander Golke
+* Matrikelnummer-1 : 	35529008
+*******************************************************************************
+* Author-2 : 		Julian Werner
+* Matrikelnummer-2 : 	35594385
+*******************************************************************************
+* Beschreibung: Treiber für eine RealTimeClock (DS3231), Anbindung ueber I2C.
+		Funktionen: Lesen und Schreiben aus und in die RTC.
+		Schreibformat: YYYY-MM-DD HH:mm:ss				
+* Version: 	1.0.0
+******************************************************************************/
+
+/* Inkludierungen */
 #include <linux/slab.h>
 #include <linux/bcd.h>
 #include <linux/kernel.h>
@@ -14,7 +33,7 @@
 #include <linux/mutex.h>
 
 /* Register Definitionen */
-#define DS3231_REG_CONTROL	0x0e
+# define DS3231_REG_CONTROL	0x0e
 # define DS3231_BIT_nEOSC	0x80
 # define DS3231_BIT_INTCN	0x04
 # define DS3231_BIT_A2IE	0x02
@@ -23,20 +42,22 @@
 # define DS3231_BIT_OSF		0x80
 # define DS3231_YEAR		0x06
 # define DS3231_MONTH		0x05
-# define DS3231_DAY			0x04
+# define DS3231_DAY		0x04
 # define DS3231_HOUR		0x02
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
 # define DS3231_TEMP_MSB	0x11
+# define DS3231_BIT_OSF 	0x80
+# define DS3231_BIT_BSY		0x04
 
 
-static int dev_open(struct inode *, struct file *);
+static int dev_open(struct inode*, struct file *);
 static int dev_close(struct inode *, struct file *);
 static ssize_t dev_read(struct file *, char __user *, size_t, loff_t *);
 static ssize_t dev_write(struct file *, const char __user *, size_t, loff_t *);
 static bool itoa(int,char *);
 static int atoi(int,char *);
-void translateMonth(int,char *);		//TO-DO: Konsistente Funktionennamen!
+void translate_Month(int,char *);
 static bool check_date(int, int, int, int, int, int, int);
 static bool check_state(void);
 /*
@@ -47,7 +68,7 @@ static struct i2c_client *ds3231_client;
 static dev_t rtc_dev;
 static struct cdev rtc_cdev;
 static struct class *rtc_devclass;
-static struct statusInfo {
+static struct statusInfo { /*Glober Zugriff auf die RTC Zustand*/
 		bool osf;
 		bool bsy;
 		int temperature;
@@ -62,18 +83,26 @@ static struct file_operations fops = {
 	.open		= dev_open,
 	.release 	= dev_close,
 };
-struct mutex etx_mutex;
+
+struct mutex etx_mutex; /*Glober Zugriff auf Mutex*/
 
 static bool check_state(void){
 	/*Überprüfung des OSF, BSF und der Termperatur des RTCs*/
-	s32 tempMSB,status_check;
-	int rueckgabewert_check_state = 0; /**/
+	s32 tempMSB = 0,
+	status_check = 0;
+	int rueckgabewert_check_state = 0;
 	status_check = i2c_smbus_read_byte_data(ds3231_client,DS3231_REG_STATUS);
 	tempMSB = i2c_smbus_read_byte_data(ds3231_client,DS3231_TEMP_MSB);
-	state.osf = status_check & 0x80; /*Bit 8 ist das OSF Bit*/
-	state.bsy = status_check & 0x04; /*Bit 3 ist das BSY Bit*/
+	
+	if(status_check < 0 || tempMSB < 0){
+		printk("DS3231_drv: Es gab einen Fehler beim auslesen der Daten aus dem RTC.\n");
+		return false;
+	}	
+	
+	state.osf = status_check & DS3231_BIT_OSF;
+	state.bsy = status_check & DS3231_BIT_BSY;
 	rueckgabewert_check_state = tempMSB & 0x7F; /*Temperatur ohne Vorzeichen abspeichern*/
-	if(tempMSB & 0x80) rueckgabewert_check_state *= -1;/*Vorzeichen Überprüfung*/
+	if(tempMSB & DS3231_BIT_OSF) rueckgabewert_check_state *= -1;/*Vorzeichen Überprüfung*/
 	state.temperature = rueckgabewert_check_state;
 	if(!state.osf) return false;
 	/*OSF war nicht aktiv und wird nun aktiviert*/
@@ -81,11 +110,19 @@ static bool check_state(void){
 	return true;	
 }
 
+/*
+ * Wird beim Zugriff auf den Treiber ausgefuehrt und verhindert gleichzeitigen Zugriff,
+ * kontrolliert Temperatur, OSF Flag und BSY Flag.
+ */
+
 static int dev_open(struct inode *inode_open, struct file *file_open){
 	if (mutex_is_locked(&etx_mutex)){
 		printk("DS3231_drv: Der Treiber arbeitet gerade, aber du bist in der Warteschlange\n");
 	}
 	mutex_lock(&etx_mutex);
+
+	/* Falls Temperatur manuell gesetzt, wird sie nicht gehol für diesen Zugriff.*/
+
 	if(!state.manualTemp){
 		if(check_state()){
 			printk("DS3231_drv: OSF nicht aktiv!\n");
@@ -93,19 +130,25 @@ static int dev_open(struct inode *inode_open, struct file *file_open){
 		}
 	}
 	else state.manualTemp = false;
+
+	/* Prueft Temperatur Zustaende. */
+
 	if(state.temperature < -40){
 			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
 	}
 	else if(state.temperature > 85){
 		printk("DS3231_drv: Die Temperatur ist sehr warm\n");
 	}
-	if(state.bsy){ /*Busy von RTC*/
+	if(state.bsy){
 		printk("DS3231_drv: Die RTC ist beschaeftigt!\n");
 		return -EBUSY;
 	}
 	return 0;
 }
 
+/*
+ * Wird beim Ende des Zugriffes ausgefuehrt und erlaubt es wieder den Treiber zu benutzen.
+ */
 static int dev_close(struct inode *inode_close, struct file *file_close){
 	mutex_unlock(&etx_mutex);
 	return 0;
@@ -114,16 +157,17 @@ static int dev_close(struct inode *inode_close, struct file *file_close){
 static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t bytes_read, loff_t *offset_read){
 	/* 
 	 * Read Funktion des Treibers
-	 * Liest das Datum aus der RTC und übermittelt es in den Userspace
-	 * Außerdem überprüfung verschiedener Parameter 
+	 * Liest das Datum aus der RTC und uebermittelt es in den Userspace
+	 * Ausserdem ueberpruefung verschiedener Parameter 
 	 */
 	int count_read = 0;
-	char string_read[3];
+	char string_read[3] = {""};
 	bool century_read = false, format = false;	
-	s32 year_read,month_read,day_read,hour_read,minute_read,second_read;
+	s32 year_read = 0,month_read = 0,day_read = 0,hour_read = 0,minute_read = 0,second_read = 0;
 	char date_read[29] = {""}, monthWord[10]={""};
-	
-	while(puffer_read[count_read++] != '\0'); /* */
+
+	while(puffer_read[count_read] != '\0') count_read++;
+
 	if(count_read < 21){ /*Es wurde noch kein vollstaendiges Datum geschrieben*/
 		/*Alle Werte aus RTC holen*/
 		year_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
@@ -144,14 +188,16 @@ static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t
 		if(hour_read >> 6) {/*12(true) or 24(false) Format*/
 			format = true;
 		}
+		/* RTC Kodierung wird in die Dezimalzahl-Kodierung umgewandelt via. Bitoperationen. */
 		year_read = ((year_read>>4)*10) + (year_read & 0xF);
 		month_read = ((month_read>>4)*10) + (month_read & 0xF);
 		day_read = ((day_read>>4)*10) + (day_read & 0xF);
 		minute_read = ((minute_read>>4)*10) + (minute_read & 0xF);
 		second_read = ((second_read>>4)*10) + (second_read & 0xF);
+
 		if(format) { /*12 Stunden Format*/
 			if(hour_read & 0x20) {
-				hour_read = 12 + (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10); 
+				hour_read = 12 + (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10);
 			} 
 			else {
 				hour_read = (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10);
@@ -162,7 +208,7 @@ static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t
 		}
 		/*Ab hier haben die s32 die korrekten Werte!
 		  und der String wird "zusammen gebaut"*/	
-		translateMonth(month_read,monthWord);
+		translate_Month(month_read,monthWord);
 		if(itoa(day_read,string_read)) {
 			strcat(date_read,string_read);
 			strcat(date_read,". ");
@@ -190,13 +236,15 @@ static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t
 		if(itoa(year_read,string_read)) {
                         strcat(date_read,string_read);
                         strcat(date_read,"\n");
-                }		
+                }
+		/* Uebergabe in den Userspace */		
 		count_read = copy_to_user(puffer_read,date_read,sizeof(date_read));
 		return sizeof(date_read) - count_read;
 	}
 	return 0;
 }
-void translateMonth(int month_translate,char *string_translate) {
+
+void translate_Month(int month_translate,char *string_translate) {
 	/*Wandelt die Monatszahl(month_translate) in einen String um und speichert den in string_translate*/
 	switch(month_translate) {
 		case 1:
@@ -259,7 +307,7 @@ static int atoi(int zahl_atoi, char *string_atoi){
 	/* Array to Integer
 	 * Wandelt string_atoi in einen Integer um
 	 * Zusätzliche Überprüfung von richtigen Daten/Zeichen*/
-	int rueckgabe_atoi;
+	int rueckgabe_atoi = 0;
 	int convert = string_atoi[zahl_atoi],convert2 = string_atoi[zahl_atoi+1];	
 	if((convert < '0' || convert > '9') || (convert2 < '0' || convert2 > '9')) return -1;
 	rueckgabe_atoi = (string_atoi[zahl_atoi]-'0')*10+(string_atoi[zahl_atoi+1]-'0');
@@ -292,6 +340,7 @@ static bool check_date(int day_check, int month_check, int century_check, int ye
     }
     else {
         if(day_check > 29) return false;
+	/* Ueberprueft ob es sich um ein Schaltjahr handelt */
         jahr = (1000 * century_check) + year_check;
         if( (!(jahr %4)) && jahr%100) return true;
         if( (!(jahr %100)) && jahr%400) return false;
@@ -302,13 +351,17 @@ static bool check_date(int day_check, int month_check, int century_check, int ye
 
 static ssize_t dev_write(struct file *file_write, const char __user *puffer_write, size_t bytes, loff_t *offset_write){
 	/* Write Funktion des Treibers
-	 * 
+	 * Schreibt ein Datum und Uhrzeit in die RTC und achtet dabei auf das Format.  
+	 * Alternativ kann man diese Funktion auch dafuer nutzen die Temperatur manuell zu ueberschreiben.
 	 */
 	char date_write[20] = "";
-	int count_write = copy_from_user(date_write,puffer_write,bytes),temp;
-	int year_write,month_write,day_write,hour_write,minutes_write,seconds_write,century_write;
-	bool century_check_write;	
-	if(date_write[0] == '?'){
+	int count_write = copy_from_user(date_write,puffer_write,bytes),temp = 0;
+	int year_write = 0,month_write = 0,day_write = 0,hour_write = 0,minutes_write = 0,seconds_write = 0,century_write = 0;
+	bool century_check_write = false;
+	/*
+	 * Schaut ob Write im Kontext der Temperatur-ueberschreibung benutzt wird oder nicht. 
+	 */	
+	if(date_write[0] == '?'){      /* Temperatur wird ueberschrieben */
 		state.manualTemp = true;
 		if(date_write[1] == '-'){
 			temp = atoiDrei(2,date_write);
@@ -320,13 +373,9 @@ static ssize_t dev_write(struct file *file_write, const char __user *puffer_writ
 			state.temperature = temp;
 		}
 	}	
-	else {
-		if(state.temperature < -40){
-			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
-		}
-		else if(state.temperature > 85){
-			printk("DS3231_drv: Die Temperatur ist sehr warm\n");
-		}
+	else {				/* Uhrzeit im RTC wird ueberschrieben */
+		
+		/* Inhalt des uebergebenen Strings wird zu Integer umgewandelt. */
 		century_write = atoi(0, date_write);
 		year_write = atoi(2, date_write);
 		month_write = atoi(5, date_write);
@@ -334,12 +383,14 @@ static ssize_t dev_write(struct file *file_write, const char __user *puffer_writ
 		hour_write = atoi(11,date_write);
 		minutes_write = atoi(14,date_write);
 		seconds_write = atoi(17,date_write);
-
+	
+		/* Format Ueberpruefung. */
 		if(date_write[4] != '-' || date_write[7] != '-' || date_write[10] != ' ' || date_write[13] != ':' || date_write[16] != ':'){
 			printk("DS3231_drv: Format falsch! >:( \n");
 			return -EINVAL;
 		}
-	 
+	 	
+		/* Inhalt Ueberpruefung */
 		if(!check_date(day_write,month_write,century_write,year_write,hour_write,minutes_write,seconds_write)){
 			if(century_write < 20 || century_write > 21){
 			 printk("DS3231_drv: Werte ausserhalb des Wertebereichs!\n");
@@ -349,12 +400,14 @@ static ssize_t dev_write(struct file *file_write, const char __user *puffer_writ
 			return -EINVAL;
 		} 
 		
+		/* Schaut ob es sich beim Datum um das 21. oder 20. Jahrhundert handelt. */
 		if(century_write == 21){
 			century_check_write = true;
 		} 
 		else{
 			century_check_write = false;
 		}
+		/* Erfolgreiches Schreiben in die RTC. */
 		i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds_write/10) << 4) | (seconds_write%10)));
 		i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes_write/10) << 4) | (minutes_write%10))); 
 		i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour_write/10) << 4) | (hour_write%10)));	
@@ -365,8 +418,6 @@ static ssize_t dev_write(struct file *file_write, const char __user *puffer_writ
 	return bytes-count_write;
 }
 
-
-
 /*
  * Initialisierung des Treibers und Devices.
  *
@@ -376,8 +427,8 @@ static ssize_t dev_write(struct file *file_write, const char __user *puffer_writ
  */
 static int ds3231_probe(struct i2c_client *client_probe, const struct i2c_device_id *id)
 {	
-	s32 reg0, reg1;
-	u8 reg_cnt, reg_sts;
+	s32 reg0 = 0, reg1 = 0;
+	u8 reg_cnt = 0, reg_sts = 0;
 	printk("DS3231_drv: ds3231_probe called\n");
 
 	/*
@@ -424,18 +475,14 @@ static int ds3231_probe(struct i2c_client *client_probe, const struct i2c_device
 
 
 /*
- * Freigebe der Resourcen.
- *
  * Diese Funktion wird beim Entfernen des Treibers oder Gerätes
- * von Linux-Kernel aufgerufen. Hier sollten die Resourcen, welche
- * in der "ds3231_probe()" Funktion angefordert wurden, freigegeben.
+ * von Linux-Kernel aufgerufen.
  */
 static int ds3231_remove(struct i2c_client *client_remove)
 {
 	printk("DS3231_drv: ds3231_remove called\n");
 	return 0;
 }
-
 
 /*
  * Device-Id. Wird für die Zuordnung des Treibers zum Gerät benötigt.
@@ -473,7 +520,7 @@ static struct i2c_driver ds3231_driver = {
  */
 static int __init ds3231_init(void)
 {	
-	int ret;	
+	int ret = 0;	
 	struct i2c_adapter *adapter;
 	const struct i2c_board_info info = {
 		I2C_BOARD_INFO("ds3231_drv", 0x68)
@@ -550,7 +597,6 @@ static int __init ds3231_init(void)
 }
 module_init(ds3231_init);
 
-
 /*
  * Aufräumroutine des Kernel-Modules.
  * 
@@ -575,5 +621,5 @@ module_exit(ds3231_exit);
 
 /* Module-Informationen. */
 MODULE_AUTHOR("Alexander Golke & Julian Werner");
-MODULE_DESCRIPTION("RTC driver for DS3231");
+MODULE_DESCRIPTION("RTC Treiber fuer DS3231");
 MODULE_LICENSE("GPL");
