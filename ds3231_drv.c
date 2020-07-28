@@ -1,22 +1,3 @@
-/*******************************************************************************
-* Institut für Rechnerarchitektur und Systemprogrammierung *
-* Universität Kassel *
-*******************************************************************************
-* Benutzeraccount : 	sysprog-03
-*******************************************************************************
-* Author-1 : 		Alexander Golke
-* Matrikelnummer-1 : 	35529008
-*******************************************************************************
-* Author-2 : 		Julian Werner
-* Matrikelnummer-2 : 	35594385
-*******************************************************************************
-* Beschreibung: Treiber für eine RealTimeClock (DS3231), Anbindung ueber I2C.
-		Funktionen: Lesen und Schreiben aus und in die RTC.
-		Schreibformat: YYYY-MM-DD HH:mm:ss				
-* Version: 	1.0.0
-******************************************************************************/
-
-/* Inkludierungen */
 #include <linux/slab.h>
 #include <linux/bcd.h>
 #include <linux/kernel.h>
@@ -30,10 +11,9 @@
 #include <asm/errno.h>
 #include <asm/delay.h>
 #include <uapi/linux/string.h>
-#include <linux/mutex.h>
 
 /* Register Definitionen */
-# define DS3231_REG_CONTROL	0x0e
+#define DS3231_REG_CONTROL	0x0e
 # define DS3231_BIT_nEOSC	0x80
 # define DS3231_BIT_INTCN	0x04
 # define DS3231_BIT_A2IE	0x02
@@ -47,17 +27,15 @@
 # define DS3231_MINUTE		0x01
 # define DS3231_SECOND		0x00
 # define DS3231_TEMP_MSB	0x11
-# define DS3231_BIT_OSF 	0x80
-# define DS3231_BIT_BSY		0x04
 
 
-static int dev_open(struct inode*, struct file *);
+static int dev_open(struct inode *, struct file *);
 static int dev_close(struct inode *, struct file *);
 static ssize_t dev_read(struct file *, char __user *, size_t, loff_t *);
 static ssize_t dev_write(struct file *, const char __user *, size_t, loff_t *);
 static bool itoa(int,char *);
 static int atoi(int,char *);
-void translate_Month(int,char *);
+void translateMonth(int,char *);		//TO-DO: Konsistente Funktionennamen!
 static bool check_date(int, int, int, int, int, int, int);
 static bool check_state(void);
 /*
@@ -68,7 +46,8 @@ static struct i2c_client *ds3231_client;
 static dev_t rtc_dev;
 static struct cdev rtc_cdev;
 static struct class *rtc_devclass;
-static struct statusInfo { /*Glober Zugriff auf die RTC Zustand*/
+static bool busy = false;
+static struct statusInfo {
 		bool osf;
 		bool bsy;
 		int temperature;
@@ -84,25 +63,16 @@ static struct file_operations fops = {
 	.release 	= dev_close,
 };
 
-struct mutex etx_mutex; /*Glober Zugriff auf Mutex*/
-
 static bool check_state(void){
 	/*Überprüfung des OSF, BSF und der Termperatur des RTCs*/
-	s32 tempMSB = 0,
-	status_check = 0;
-	int rueckgabewert_check_state = 0;
+	s32 tempMSB,status_check;
+	int rueckgabewert_check_state = 0; /**/
 	status_check = i2c_smbus_read_byte_data(ds3231_client,DS3231_REG_STATUS);
 	tempMSB = i2c_smbus_read_byte_data(ds3231_client,DS3231_TEMP_MSB);
-	
-	if(status_check < 0 || tempMSB < 0){
-		printk("DS3231_drv: Es gab einen Fehler beim auslesen der Daten aus dem RTC.\n");
-		return false;
-	}	
-	
-	state.osf = status_check & DS3231_BIT_OSF;
-	state.bsy = status_check & DS3231_BIT_BSY;
+	state.osf = status_check & 0x80; /*Bit 8 ist das OSF Bit*/
+	state.bsy = status_check & 0x04; /*Bit 3 ist das BSY Bit*/
 	rueckgabewert_check_state = tempMSB & 0x7F; /*Temperatur ohne Vorzeichen abspeichern*/
-	if(tempMSB & DS3231_BIT_OSF) rueckgabewert_check_state *= -1;/*Vorzeichen Überprüfung*/
+	if(tempMSB & 0x80) rueckgabewert_check_state *= -1;/*Vorzeichen Überprüfung*/
 	state.temperature = rueckgabewert_check_state;
 	if(!state.osf) return false;
 	/*OSF war nicht aktiv und wird nun aktiviert*/
@@ -110,142 +80,120 @@ static bool check_state(void){
 	return true;	
 }
 
-/*
- * Wird beim Zugriff auf den Treiber ausgefuehrt und verhindert gleichzeitigen Zugriff,
- * kontrolliert Temperatur, OSF Flag und BSY Flag.
- */
+static int dev_open(struct inode *inode, struct file *file){
+	return 0;
+}
 
-static int dev_open(struct inode *inode_open, struct file *file_open){
-	if (mutex_is_locked(&etx_mutex)){
-		printk("DS3231_drv: Der Treiber arbeitet gerade, aber du bist in der Warteschlange\n");
-	}
-	mutex_lock(&etx_mutex);
+static int dev_close(struct inode *inode, struct file *file){
+	return 0;
+}
 
-	/* Falls Temperatur manuell gesetzt, wird sie nicht gehol für diesen Zugriff.*/
+static ssize_t dev_read(struct file *file, char __user *puffer, size_t bytes, loff_t *offset){
 
-	if(!state.manualTemp){
-		if(check_state()){
-			printk("DS3231_drv: OSF nicht aktiv!\n");
-			return -EAGAIN;
-		}
-	}
-	else state.manualTemp = false;
-
-	/* Prueft Temperatur Zustaende. */
-
-	if(state.temperature < -40){
-			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
-	}
-	else if(state.temperature > 85){
-		printk("DS3231_drv: Die Temperatur ist sehr warm\n");
-	}
-	if(state.bsy){
-		printk("DS3231_drv: Die RTC ist beschaeftigt!\n");
+	int count = 0;
+	char string[3];
+	bool century = false, format = false;	
+	s32 year,month,day,hour,minute,second;
+	char date[29] = {""}, monthWord[10]={""};
+	
+	if(busy){
+		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
 		return -EBUSY;
-	}
-	return 0;
-}
+	}	
+    busy = true;
 
-/*
- * Wird beim Ende des Zugriffes ausgefuehrt und erlaubt es wieder den Treiber zu benutzen.
- */
-static int dev_close(struct inode *inode_close, struct file *file_close){
-	mutex_unlock(&etx_mutex);
-	return 0;
-}
-
-static ssize_t dev_read(struct file *file_read, char __user *puffer_read, size_t bytes_read, loff_t *offset_read){
-	/* 
-	 * Read Funktion des Treibers
-	 * Liest das Datum aus der RTC und uebermittelt es in den Userspace
-	 * Ausserdem ueberpruefung verschiedener Parameter 
-	 */
-	int count_read = 0;
-	char string_read[3] = {""};
-	bool century_read = false, format = false;	
-	s32 year_read = 0,month_read = 0,day_read = 0,hour_read = 0,minute_read = 0,second_read = 0;
-	char date_read[29] = {""}, monthWord[10]={""};
-
-	while(puffer_read[count_read] != '\0') count_read++;
-
-	if(count_read < 21){ /*Es wurde noch kein vollstaendiges Datum geschrieben*/
-		/*Alle Werte aus RTC holen*/
-		year_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
-		month_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_MONTH);
-		day_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_DAY);
-		hour_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_HOUR);
-		minute_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_MINUTE);
-		second_read = i2c_smbus_read_byte_data(ds3231_client,DS3231_SECOND);
+	while(puffer[count++] != '\0');
+	if(count < 21){
+		if(!state.manualTemp){
+			if(check_state()){
+				printk("DS3231_drv: OSF nicht aktiv!\n");
+				return -EAGAIN;
+			}
+		}
+		else state.manualTemp = false;
+		if(state.temperature < -40){
+				printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
+		}
+		else if(state.temperature > 85){
+			printk("DS3231_drv: Die Temperatur ist sehr warm\n");
+		}
+		if(state.bsy){ /*Busy von RTC*/
+			printk("DS3231_drv: Die RTC ist beschaeftigt!\n");
+			return -EBUSY;
+		}
+		year = i2c_smbus_read_byte_data(ds3231_client,DS3231_YEAR);
+		month = i2c_smbus_read_byte_data(ds3231_client,DS3231_MONTH);
+		day = i2c_smbus_read_byte_data(ds3231_client,DS3231_DAY);
+		hour = i2c_smbus_read_byte_data(ds3231_client,DS3231_HOUR);
+		minute = i2c_smbus_read_byte_data(ds3231_client,DS3231_MINUTE);
+		second = i2c_smbus_read_byte_data(ds3231_client,DS3231_SECOND);
 		
-		if(year_read < 0 || month_read < 0 || day_read < 0 || hour_read < 0 || minute_read < 0 || second_read < 0) {
-			/*Fehler beim Lesen, nochmal Versuchen*/
+		if(year < 0 || month < 0 || day < 0 || hour < 0 || minute < 0 || second < 0) {
+			busy = false;
 			return 0;
 		}
-		if(month_read >>7) { /* Centurybit -> 2000-2099 -> false, 2100-2199 -> true */
-			century_read = true;
-			month_read &= 0x7F; /*Bit löschen*/
+		if(month >>7) { /* Centurybit -> 2000-2099 -> false, 2100-2199 -> true */
+			century = true;
+			month &= 0x7F; /*Bit löschen*/
 		}
-		if(hour_read >> 6) {/*12(true) or 24(false) Format*/
+		if(hour >> 6) {/*12(true) or 24(false) Format*/
 			format = true;
 		}
-		/* RTC Kodierung wird in die Dezimalzahl-Kodierung umgewandelt via. Bitoperationen. */
-		year_read = ((year_read>>4)*10) + (year_read & 0xF);
-		month_read = ((month_read>>4)*10) + (month_read & 0xF);
-		day_read = ((day_read>>4)*10) + (day_read & 0xF);
-		minute_read = ((minute_read>>4)*10) + (minute_read & 0xF);
-		second_read = ((second_read>>4)*10) + (second_read & 0xF);
-
+		year = ((year>>4)*10) + (year & 0xF);
+		month = ((month>>4)*10) + (month & 0xF);
+		day = ((day>>4)*10) + (day & 0xF);
+		minute = ((minute>>4)*10) + (minute & 0xF);
+		second = ((second>>4)*10) + (second & 0xF);
 		if(format) { /*12 Stunden Format*/
-			if(hour_read & 0x20) {
-				hour_read = 12 + (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10);
+			if(hour & 0x20) {
+				hour = 12 + (hour & 0xF) + (((hour & 0x10)>>4)*10); 
 			} 
 			else {
-				hour_read = (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10);
+				hour = (hour & 0xF) + (((hour & 0x10)>>4)*10);
 			}
 		}
 		else { /*24 Stunden Format*/
-			hour_read = (hour_read & 0xF) + (((hour_read & 0x10)>>4)*10) + (((hour_read & 0x20)>>5)*20);
+			hour = (hour & 0xF) + (((hour & 0x10)>>4)*10) + (((hour & 0x20)>>5)*20);
 		}
-		/*Ab hier haben die s32 die korrekten Werte!
-		  und der String wird "zusammen gebaut"*/	
-		translate_Month(month_read,monthWord);
-		if(itoa(day_read,string_read)) {
-			strcat(date_read,string_read);
-			strcat(date_read,". ");
+		/*Ab hier haben die s32 die korrekten Werte!*/	
+		translateMonth(month,monthWord);
+		if(itoa(day,string)) {
+			strcat(date,string);
+			strcat(date,". ");
 		}
-		strcat(date_read,monthWord);
-		strcat(date_read," ");
-		if(itoa(hour_read,string_read)) {
-                        strcat(date_read,string_read);
-                        strcat(date_read,":");
+		strcat(date,monthWord);
+		strcat(date," ");
+		if(itoa(hour,string)) {
+                        strcat(date,string);
+                        strcat(date,":");
                 }
-		if(itoa(minute_read,string_read)) {
-                        strcat(date_read,string_read);
-                        strcat(date_read,":");
+		if(itoa(minute,string)) {
+                        strcat(date,string);
+                        strcat(date,":");
                 }
-		if(itoa(second_read,string_read)) {
-                        strcat(date_read,string_read);
-                        strcat(date_read," ");
+		if(itoa(second,string)) {
+                        strcat(date,string);
+                        strcat(date," ");
                 }
-		if(century_read){
-			strcat(date_read,"21");
+		if(century){
+			strcat(date,"21");
 		}
 		else {
-			strcat(date_read,"20");
+			strcat(date,"20");
 		}
-		if(itoa(year_read,string_read)) {
-                        strcat(date_read,string_read);
-                        strcat(date_read,"\n");
-                }
-		/* Uebergabe in den Userspace */		
-		count_read = copy_to_user(puffer_read,date_read,sizeof(date_read));
-		return sizeof(date_read) - count_read;
+		if(itoa(year,string)) {
+                        strcat(date,string);
+                        strcat(date,"\n");
+                }		
+		count = copy_to_user(puffer,date,sizeof(date));
+		busy = false;
+		return sizeof(date) - count;
 	}
+	busy = false;
 	return 0;
 }
-
-void translate_Month(int month_translate,char *string_translate) {
-	/*Wandelt die Monatszahl(month_translate) in einen String um und speichert den in string_translate*/
+void translateMonth(int month_translate,char *string_translate) {
+	/*Wandelt die Monatszahl in den Text um und speichert es in string_translate*/
 	switch(month_translate) {
 		case 1:
 			strcpy(string_translate,"Januar");
@@ -288,7 +236,7 @@ void translate_Month(int month_translate,char *string_translate) {
 static bool itoa(int zahl_itoa, char *string_itoa){
 	/* Integer to Array
 	 * Wandelt den Int in ein zweistelliges Char Array um
-	 * Ist die Zahl mehr als zweistellig wird false zurück geben, ansonsten true*/
+	 * Ist die mehr als zweistellig wird false zurück geben, ansonsten true*/
 	if(zahl_itoa > 99 || zahl_itoa < 0){
 		return false;
 	}
@@ -306,8 +254,8 @@ static bool itoa(int zahl_itoa, char *string_itoa){
 static int atoi(int zahl_atoi, char *string_atoi){
 	/* Array to Integer
 	 * Wandelt string_atoi in einen Integer um
-	 * Zusätzliche Überprüfung von richtigen Daten/Zeichen*/
-	int rueckgabe_atoi = 0;
+	 * Zusätzliche Überprüfung von richtigen Daten*/
+	int rueckgabe_atoi;
 	int convert = string_atoi[zahl_atoi],convert2 = string_atoi[zahl_atoi+1];	
 	if((convert < '0' || convert > '9') || (convert2 < '0' || convert2 > '9')) return -1;
 	rueckgabe_atoi = (string_atoi[zahl_atoi]-'0')*10+(string_atoi[zahl_atoi+1]-'0');
@@ -323,7 +271,6 @@ static int atoiDrei(int zahl_atoiDrei, char *string_atoiDrei){
 }
 
 static bool check_date(int day_check, int month_check, int century_check, int year_check, int hour_check, int minute_check, int second_check) {
-	/* Prüft das Datum auf Richtigkeit und gibt beim Fehler false zurueck */
     int jahr = 0;
     if(day_check < 1 || day_check > 31) return false;
     if(month_check < 1 || month_check > 12) return false;
@@ -340,7 +287,6 @@ static bool check_date(int day_check, int month_check, int century_check, int ye
     }
     else {
         if(day_check > 29) return false;
-	/* Ueberprueft ob es sich um ein Schaltjahr handelt */
         jahr = (1000 * century_check) + year_check;
         if( (!(jahr %4)) && jahr%100) return true;
         if( (!(jahr %100)) && jahr%400) return false;
@@ -349,74 +295,97 @@ static bool check_date(int day_check, int month_check, int century_check, int ye
     }
 }
 
-static ssize_t dev_write(struct file *file_write, const char __user *puffer_write, size_t bytes, loff_t *offset_write){
-	/* Write Funktion des Treibers
-	 * Schreibt ein Datum und Uhrzeit in die RTC und achtet dabei auf das Format.  
-	 * Alternativ kann man diese Funktion auch dafuer nutzen die Temperatur manuell zu ueberschreiben.
-	 */
-	char date_write[20] = "";
-	int count_write = copy_from_user(date_write,puffer_write,bytes),temp = 0;
-	int year_write = 0,month_write = 0,day_write = 0,hour_write = 0,minutes_write = 0,seconds_write = 0,century_write = 0;
-	bool century_check_write = false;
-	/*
-	 * Schaut ob Write im Kontext der Temperatur-ueberschreibung benutzt wird oder nicht. 
-	 */	
-	if(date_write[0] == '?'){      /* Temperatur wird ueberschrieben */
+static ssize_t dev_write(struct file *file, const char __user *puffer, size_t bytes, loff_t *offset){
+	char date[20] = "";
+	int count = copy_from_user(date,puffer,bytes),temp;
+	int year,month,day,hour,minutes,seconds,century;
+	bool century_check;
+
+	if(busy){
+		printk("DS3231_drv: Das Geraet ist beschaeftigt!\n");
+		return -EBUSY;
+	}
+	if(!state.manualTemp){
+		if(check_state()){
+			printk("DS3231_drv: OSF nicht aktiv!\n");
+			return -EAGAIN;
+		}
+	}
+	else state.manualTemp = false;
+	if(state.temperature < -40){
+			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
+	}
+	else if(state.temperature > 85){
+		printk("DS3231_drv: Die Temperatur ist sehr warm\n");
+	}
+	if(state.bsy){ /*Busy von RTC*/
+		printk("DS3231_drv: Die RTC ist beschaeftigt!\n");
+		return -EBUSY;
+	}
+    busy = true;
+	
+	if(date[0] == '$'){
 		state.manualTemp = true;
-		if(date_write[1] == '-'){
-			temp = atoiDrei(2,date_write);
+		if(date[1] == '-'){
+			temp = atoiDrei(2,date);
 			temp *= -1;
 			state.temperature = temp;
 		}
 		else{
-			temp = atoiDrei(1,date_write);
+			temp = atoiDrei(1,date);
 			state.temperature = temp;
 		}
 	}	
-	else {				/* Uhrzeit im RTC wird ueberschrieben */
-		
-		/* Inhalt des uebergebenen Strings wird zu Integer umgewandelt. */
-		century_write = atoi(0, date_write);
-		year_write = atoi(2, date_write);
-		month_write = atoi(5, date_write);
-		day_write = atoi(8,date_write);
-		hour_write = atoi(11,date_write);
-		minutes_write = atoi(14,date_write);
-		seconds_write = atoi(17,date_write);
-	
-		/* Format Ueberpruefung. */
-		if(date_write[4] != '-' || date_write[7] != '-' || date_write[10] != ' ' || date_write[13] != ':' || date_write[16] != ':'){
+	else {
+		if(state.temperature < -40){
+			printk("DS3231_drv: Die Temperatur ist sehr kalt\n");
+		}
+		else if(state.temperature > 85){
+			printk("DS3231_drv: Die Temperatur ist sehr warm\n");
+		}
+		century = atoi(0, date);
+		year = atoi(2, date);
+		month = atoi(5, date);
+		day = atoi(8,date);
+		hour = atoi(11,date);
+		minutes = atoi(14,date);
+		seconds = atoi(17,date);
+
+		if(date[4] != '-' || date[7] != '-' || date[10] != ' ' || date[13] != ':' || date[16] != ':'){
 			printk("DS3231_drv: Format falsch! >:( \n");
+			busy = false;
 			return -EINVAL;
 		}
-	 	
-		/* Inhalt Ueberpruefung */
-		if(!check_date(day_write,month_write,century_write,year_write,hour_write,minutes_write,seconds_write)){
-			if(century_write < 20 || century_write > 21){
+	 
+		if(!check_date(day,month,century,year,hour,minutes,seconds)){
+			if(century < 20 || century > 21){
 			 printk("DS3231_drv: Werte ausserhalb des Wertebereichs!\n");
+			 busy = false;
 			 return -EOVERFLOW;
 			}
 			printk("DS3231_drv: Datum existiert nicht!\n");
+			busy = false;
 			return -EINVAL;
 		} 
 		
-		/* Schaut ob es sich beim Datum um das 21. oder 20. Jahrhundert handelt. */
-		if(century_write == 21){
-			century_check_write = true;
+		if(century == 21){
+			century_check = true;
 		} 
 		else{
-			century_check_write = false;
+			century_check = false;
 		}
-		/* Erfolgreiches Schreiben in die RTC. */
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds_write/10) << 4) | (seconds_write%10)));
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes_write/10) << 4) | (minutes_write%10))); 
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour_write/10) << 4) | (hour_write%10)));	
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day_write/10) << 4) | (day_write%10)));	
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month_write/10) << 4) | (month_write%10) | (century_check_write << 7)));	
-		i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year_write/10) << 4) | (year_write%10)));
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_SECOND,(((seconds/10) << 4) | (seconds%10)));
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_MINUTE,(((minutes/10) << 4) | (minutes%10))); 
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_HOUR,(((hour/10) << 4) | (hour%10)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_DAY,(((day/10) << 4) | (day%10)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_MONTH,(((month/10) << 4) | (month%10) | (century_check << 7)));	
+		i2c_smbus_write_byte_data(ds3231_client,DS3231_YEAR,(((year/10) << 4) | (year%10)));
 	}
-	return bytes-count_write;
+	busy = false;
+	return bytes-count;
 }
+
+
 
 /*
  * Initialisierung des Treibers und Devices.
@@ -425,17 +394,17 @@ static ssize_t dev_write(struct file *file_write, const char __user *puffer_writ
  * Treiber passende Device-Information gefunden wurde. Innerhalb der Funktion
  * wird der Treiber und das Device initialisiert.
  */
-static int ds3231_probe(struct i2c_client *client_probe, const struct i2c_device_id *id)
+static int ds3231_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {	
-	s32 reg0 = 0, reg1 = 0;
-	u8 reg_cnt = 0, reg_sts = 0;
+	s32 reg0, reg1;
+	u8 reg_cnt, reg_sts;
 	printk("DS3231_drv: ds3231_probe called\n");
 
 	/*
 	 * Control und Status Register auslesen.
 	 */
-	reg0 = i2c_smbus_read_byte_data(client_probe, DS3231_REG_CONTROL);
-	reg1 = i2c_smbus_read_byte_data(client_probe, DS3231_REG_STATUS);
+	reg0 = i2c_smbus_read_byte_data(client, DS3231_REG_CONTROL);
+	reg1 = i2c_smbus_read_byte_data(client, DS3231_REG_STATUS);
 	if(reg0 < 0 || reg1 < 0) {
 		printk("DS3231_drv: Fehler beim Lesen von Control oder Status Register.\n");
 		return -ENODEV;
@@ -457,7 +426,7 @@ static int ds3231_probe(struct i2c_client *client_probe, const struct i2c_device
 	reg_cnt &= ~(DS3231_BIT_INTCN | DS3231_BIT_A2IE | DS3231_BIT_A1IE);
 
 	/* Control-Register setzen */
-	i2c_smbus_write_byte_data(client_probe, DS3231_REG_CONTROL, reg_cnt);
+	i2c_smbus_write_byte_data(client, DS3231_REG_CONTROL, reg_cnt);
 
 	/*
 	 * Prüfe Oscilator zustand. Falls Fehler vorhanden, wird das Fehlerfalg
@@ -465,7 +434,7 @@ static int ds3231_probe(struct i2c_client *client_probe, const struct i2c_device
 	 */
 	if (reg_sts & DS3231_BIT_OSF) {
 		reg_sts &= ~DS3231_BIT_OSF;
-		i2c_smbus_write_byte_data(client_probe, DS3231_REG_STATUS, reg_sts);
+		i2c_smbus_write_byte_data(client, DS3231_REG_STATUS, reg_sts);
 		printk("DS3231_drv: Oscilator Stop Flag (OSF) zurückgesetzt.\n");
 	}
 
@@ -475,14 +444,18 @@ static int ds3231_probe(struct i2c_client *client_probe, const struct i2c_device
 
 
 /*
+ * Freigebe der Resourcen.
+ *
  * Diese Funktion wird beim Entfernen des Treibers oder Gerätes
- * von Linux-Kernel aufgerufen.
+ * von Linux-Kernel aufgerufen. Hier sollten die Resourcen, welche
+ * in der "ds3231_probe()" Funktion angefordert wurden, freigegeben.
  */
-static int ds3231_remove(struct i2c_client *client_remove)
+static int ds3231_remove(struct i2c_client *client)
 {
 	printk("DS3231_drv: ds3231_remove called\n");
 	return 0;
 }
+
 
 /*
  * Device-Id. Wird für die Zuordnung des Treibers zum Gerät benötigt.
@@ -520,12 +493,11 @@ static struct i2c_driver ds3231_driver = {
  */
 static int __init ds3231_init(void)
 {	
-	int ret = 0;	
+	int ret;	
 	struct i2c_adapter *adapter;
 	const struct i2c_board_info info = {
 		I2C_BOARD_INFO("ds3231_drv", 0x68)
 	};
-	mutex_init(&etx_mutex);
 	state.manualTemp = false;
 	printk("DS3231_drv: ds3231_module_init aufgerufen\n");
 	
@@ -597,6 +569,7 @@ static int __init ds3231_init(void)
 }
 module_init(ds3231_init);
 
+
 /*
  * Aufräumroutine des Kernel-Modules.
  * 
@@ -610,7 +583,7 @@ static void __exit ds3231_exit(void)
 	class_destroy(rtc_devclass);
 	cdev_del(&rtc_cdev);
 	unregister_chrdev_region(rtc_dev, 1);
-	printk("DS3231_drv: Treiber entladen\n");
+	printk("Treiber entladen\n");
 	if(ds3231_client != NULL) {
 		i2c_del_driver(&ds3231_driver);
 		i2c_unregister_device(ds3231_client);
@@ -621,5 +594,5 @@ module_exit(ds3231_exit);
 
 /* Module-Informationen. */
 MODULE_AUTHOR("Alexander Golke & Julian Werner");
-MODULE_DESCRIPTION("RTC Treiber fuer DS3231");
+MODULE_DESCRIPTION("RTC driver for DS3231");
 MODULE_LICENSE("GPL");
